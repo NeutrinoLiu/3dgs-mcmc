@@ -434,14 +434,15 @@ def readDynamicSceneInfo(path, images, eval, llffhold=8, init_type="random", num
         assert os.path.exists(max_frame_dir), f"missing frame dir: {max_frame_dir}"
 
     fixed_cam_infos_unsorted = readFixedCams(cams=cams_para)
-    print([c.image_name for c in fixed_cam_infos_unsorted])
+    # print([c.image_name for c in fixed_cam_infos_unsorted])
     fixed_cam_infos = sorted(fixed_cam_infos_unsorted.copy(), key = lambda x : x.image_name)
 
     train_test_split = fixed_cam_infos.copy()
     train_cam_info_at = []
     test_cam_info_at = []
 
-    def update_img_path(c, t, load=False):
+    def update_img_path(c, t, load=True):
+        # enable load to preopen the image for non-lazy camera loader
         uid = f"{t}.{c.uid}"
         image_name = os.path.join(str(t), c.image_name)
         image_path = os.path.join(path, reading_dir, image_name)

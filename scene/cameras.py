@@ -135,20 +135,20 @@ class LazyCamera(nn.Module):
         '''
         this is a copy of camera_utils/loadCam() for lazy loading
         '''
-
         # ------------------------------- loadCam part ------------------------------- #
         if self.original_image is not None:
+            print(f"duplicate loading cam {self.image_name}")
             return 
         image = Image.open(self.image_path)
         resolution_scale = self.resolution_scale
-        resolution = self.args_resolution # args.resolution
+        args_resolution = self.args_resolution # args.resolution
 
         orig_w, orig_h = image.size
 
-        if resolution in [1, 2, 4, 8]:
-            resolution = round(orig_w/(resolution_scale * resolution)), round(orig_h/(resolution_scale * self.args_resolution))
+        if args_resolution in [1, 2, 4, 8]:
+            resolution = round(orig_w/(resolution_scale * args_resolution)), round(orig_h/(resolution_scale * args_resolution))
         else:  # should be a type that converts to float
-            if resolution == -1:
+            if args_resolution == -1:
                 if orig_w > 1600:
                     global WARNED
                     if not WARNED:
@@ -159,7 +159,7 @@ class LazyCamera(nn.Module):
                 else:
                     global_down = 1
             else:
-                global_down = orig_w / resolution
+                global_down = orig_w / args_resolution
 
             scale = float(global_down) * float(resolution_scale)
             resolution = (int(orig_w / scale), int(orig_h / scale))
@@ -167,10 +167,10 @@ class LazyCamera(nn.Module):
         resized_image_rgb = PILtoTorch(image, resolution)
 
         post_resized_image = resized_image_rgb[:3, ...]
+        gt_alpha_mask = None
+        
         if resized_image_rgb.shape[1] == 4:
             gt_alpha_mask = resized_image_rgb[3:4, ...]
-        else:
-            gt_alpha_mask = None
 
         # ----------------------------- camera init part ----------------------------- #
         self.original_image = post_resized_image.clamp(0.0, 1.0).to(self.data_device)

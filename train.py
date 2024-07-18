@@ -80,6 +80,7 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
 
         # Pick a random Camera
         if not viewpoint_stack:
+            scene.clearTrainCamerasAt(args.frame)
             viewpoint_stack = scene.getTrainCamerasAt(args.frame).copy()
             viewpoint_cam = viewpoint_stack.pop(randint(0, len(viewpoint_stack)-1))
         else:
@@ -205,7 +206,7 @@ def training_report(tb_writer, iteration, Ll1, loss, l1_loss, elapsed, testing_i
             tb_writer.add_scalar('total_points', scene.gaussians.get_xyz.shape[0], iteration)
         
         # test the correctness only 
-        # scene.clearTestCamerasAt(args.frame)
+        scene.clearTestCamerasAt(args.frame)
 
         torch.cuda.empty_cache()
 

@@ -11,4 +11,5 @@ for n in range(N_max):
         binoms[n, k] = comb(n, k)
 
 def compute_relocation_cuda(opacity_old, scale_old, N):
+    N.clamp_(min=1, max=N_max-1)
     return compute_relocation(opacity_old, scale_old, N, binoms, N_max)
