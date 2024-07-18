@@ -11,6 +11,7 @@
 
 import os
 import sys
+import random
 from PIL import Image
 from typing import NamedTuple
 from scene.colmap_loader import read_extrinsics_text, read_intrinsics_text, qvec2rotmat, \
@@ -35,11 +36,19 @@ class CameraInfo(NamedTuple):
     width: int
     height: int
     extra_para: dict = None
+    frame: int = -1
 
 class SceneInfo(NamedTuple):
     point_cloud: BasicPointCloud
     train_cameras: list
     test_cameras: list
+    nerf_normalization: dict
+    ply_path: str
+
+class DynamicSceneInfo(NamedTuple):
+    point_cloud: BasicPointCloud
+    train_cam_at: list
+    test_cam_at: list
     nerf_normalization: dict
     ply_path: str
 
@@ -357,10 +366,143 @@ def readGoogleImmersiveInfo(path, images, eval, llffhold=8, init_type="random", 
                            ply_path=ply_path)
     return scene_info
 
+# ----------------------------- SwinGS dataloader ---------------------------- #
+def readFixedCams(cams: dict):
+    '''
+    dont read img at this time
+    '''
+    cam_infos = []
+    for cam_name, paras in cams.items():
+        sys.stdout.write('\r')
+        # the exact output you're looking for:
+        sys.stdout.write("Reading camera {}".format(cam_name))
+        sys.stdout.flush()
 
+        extr = paras['extrinsic']
+        intr = paras['intrinsic']
+        height = intr['height']
+        width = intr['width']
+
+        uid = int(cam_name.split('_')[-1].split('Cam')[-1].split('.')[0])
+
+        R = np.array(extr['SO3']).T
+        T = np.array(extr['T'])
+
+        focal_length_x = intr['matrix'][0][0]
+        focal_length_y = intr['matrix'][1][1]
+        FovY = focal2fov(focal_length_y, height)
+        FovX = focal2fov(focal_length_x, width)
+        cx, cy = intr['matrix'][0][-1], intr['matrix'][1][-1] 
+        extra = {
+            "cx": cx,
+            "cy": cy,
+            "focal_x": focal_length_x,
+            "focal_y": focal_length_y
+        }
+        # extra=None
+
+        image_name = f"{cam_name}"
+        cam_info = CameraInfo(uid=uid, R=R, T=T, FovY=FovY, FovX=FovX, image=None,
+                              image_path=None, image_name=image_name, width=width, height=height,
+                              extra_para=extra)
+        cam_infos.append(cam_info)
+    sys.stdout.write('\n')
+    return cam_infos
+
+def readDynamicSceneInfo(path, images, eval, llffhold=8, init_type="random", num_pts=100000,
+                         max_frame=10, tempo_shuffle=False):
+    '''
+    a SwinGS dataset expect to follow the following dir structure:
+
+        - dataset_name
+            - images_per_frame
+                - 0
+                - 1
+                ...
+            - cam.json
+
+    each subdir in images_per_frame should includes all images shooted by 
+    every camera mentioned in cam.json
+    '''
+    cameras_file = os.path.join(path, "cam.json")
+    with open(cameras_file, "r") as f:
+        cams_para = json.load(f)
+
+    reading_dir = "images_per_frame"
+    for t in range(max_frame):
+        max_frame_dir = os.path.join(path, reading_dir, str(t))
+        assert os.path.exists(max_frame_dir), f"missing frame dir: {max_frame_dir}"
+
+    fixed_cam_infos_unsorted = readFixedCams(cams=cams_para)
+    print([c.image_name for c in fixed_cam_infos_unsorted])
+    fixed_cam_infos = sorted(fixed_cam_infos_unsorted.copy(), key = lambda x : x.image_name)
+
+    train_test_split = fixed_cam_infos.copy()
+    train_cam_info_at = []
+    test_cam_info_at = []
+
+    def update_img_path(c, t, load=False):
+        uid = f"{t}.{c.uid}"
+        image_name = os.path.join(str(t), c.image_name)
+        image_path = os.path.join(path, reading_dir, image_name)
+        image = Image.open(image_path) if load else None
+
+        return CameraInfo(  uid=uid, 
+                            R=c.R, T=c.T, FovY=c.FovY, FovX=c.FovX, 
+                            image=image, image_path=image_path, image_name=image_name,
+                            width=c.width, height=c.height, extra_para=c.extra_para,
+                            frame = t)
+    
+    if eval:
+        if tempo_shuffle: random.seed(42)
+        for t in range(max_frame):
+            trains_at_t = []
+            tests_at_t = []
+            if tempo_shuffle: random.shuffle(train_test_split)
+            for idx, c in enumerate(train_test_split):
+                image_at_t = update_img_path(c, t)
+                if idx % llffhold != 0:
+                    trains_at_t.append(image_at_t)
+                else:
+                    tests_at_t.append(image_at_t)
+            train_cam_info_at.append(trains_at_t)
+            test_cam_info_at.append(tests_at_t)
+    else:
+        for t in range(max_frame):
+            train_cam_info_at.append([update_img_path(c, t) for c in train_test_split])
+            test_cam_info_at.append([])
+    
+    # use the first frame camera to init random points
+    nerf_normalization = getNerfppNorm(train_cam_info_at[0]) 
+
+    # --------------------------- random only ply init --------------------------- #
+    ply_path = os.path.join(path, "random.ply")
+    print(f"Generating random point cloud ({num_pts})...")
+    
+    xyz = np.random.random((num_pts, 3)) * nerf_normalization["radius"]* 3*2 -(nerf_normalization["radius"]*3)
+    
+    num_pts = xyz.shape[0]
+    shs = np.random.random((num_pts, 3)) / 255.0
+    pcd = BasicPointCloud(points=xyz, colors=SH2RGB(shs), normals=np.zeros((num_pts, 3)))
+
+    storePly(ply_path, xyz, SH2RGB(shs) * 255)
+
+    try:
+        pcd = fetchPly(ply_path)
+    except:
+        pcd = None
+
+    scene_info = DynamicSceneInfo(point_cloud=pcd,
+                           train_cam_at = train_cam_info_at,
+                           test_cam_at = test_cam_info_at,
+                           nerf_normalization=nerf_normalization,
+                           ply_path=ply_path)
+    return scene_info
 
 sceneLoadTypeCallbacks = {
     "Colmap": readColmapSceneInfo,
     "Blender" : readNerfSyntheticInfo,
-    "Google" : readGoogleImmersiveInfo
+    "Google" : readGoogleImmersiveInfo,
+    "SwinGS": readDynamicSceneInfo
 }
+

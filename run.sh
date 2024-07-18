@@ -14,6 +14,7 @@ run_train() {
 
 # best for actor06
 # 100000, 1e-4, 5e4
+# python train.py --source_path data/actor06_all --cap_max 100000 --scale_reg 1e-4 --opacity_reg 1e-4 --noise_lr 5e4 --init_type random --eval 
 
 run_train 100000 1e-2 5e3 2
 run_train 100000 1e-3 5e3 2

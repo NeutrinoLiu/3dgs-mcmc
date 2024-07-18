@@ -1,0 +1,17 @@
+method to update:
+    gaussians.load_ply()
+    gaussians.save_ply()
+    gaussians.create_from_pcd()
+
+
+class member to update:
+    scene_info.test_cam_at[]
+    scene_info.train_cam_at[]
+
+all cameras structure:
+    cams_at[t] = {cam1 ... camN}
+
+
+TODO dynamically load dataset at frame (t)
+load()
+unload()

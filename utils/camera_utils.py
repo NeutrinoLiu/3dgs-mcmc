@@ -9,7 +9,7 @@
 # For inquiries contact  george.drettakis@inria.fr
 #
 
-from scene.cameras import Camera
+from scene.cameras import Camera, LazyCamera
 import numpy as np
 from utils.general_utils import PILtoTorch
 from utils.graphics_utils import fov2focal
@@ -80,4 +80,27 @@ def camera_to_JSON(id, camera : Camera):
         'fy' : fov2focal(camera.FovY, camera.height),
         'fx' : fov2focal(camera.FovX, camera.width)
     }
+    if hasattr(camera, 'frame'):
+        camera_entry['frame'] = camera.frame
     return camera_entry
+
+
+# -------------------------- laze load to save GDDR -------------------------- #
+
+def cameraList_from_camInfos_lazy(cam_infos, resolution_scale, args):
+    camera_list = []
+
+    for id, c in enumerate(cam_infos):
+        camera_list.append(
+            LazyCamera(colmap_id=c.uid, R=c.R, T=c.T, 
+                  FoVx=c.FovX, FoVy=c.FovY, 
+                  image=None, gt_alpha_mask=None,
+                  image_name=c.image_name, uid=id, data_device=args.data_device,
+                  # new member fields
+                  extra_para=c.extra_para,
+                  resolution_scale = resolution_scale,
+                  args_resolution = args.resolution,
+                  image_path=c.image_path)
+        )
+
+    return camera_list
