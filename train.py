@@ -13,7 +13,8 @@ import os
 import torch
 from random import randint
 from utils.loss_utils import l1_loss, ssim
-from gaussian_renderer import render, network_gui
+from gaussian_renderer import network_gui
+from gaussian_renderer import deformable_render as render
 import sys
 from scene import Scene, DynamicScene, GaussianModel
 from utils.general_utils import safe_state
@@ -83,10 +84,6 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
         if iteration % 1000 == 0:
             gaussians.oneupSHdegree()
 
-
-        window_start_frame = 0
-        window_end_frame = 5
-
         # Pick a random Camera with in window [start, end]
         if not viewpoint_stack:
             scene.clearAllTrain()
@@ -101,9 +98,11 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
 
         bg = torch.rand((3), device="cuda") if opt.random_background else background
 
-        deformed_gaussians = deform(gaussians, viewpoint_cam.frame)
-
-        render_pkg = render(viewpoint_cam, deformed_gaussians, pipe, bg)
+        # need swin_mgr when perform training: 
+        # knowing which part gaussian is frozen
+        # and which part gaussian is mutable
+        render_pkg = render(viewpoint_cam, gaussians, pipe, bg,
+                            swin_mgr=swin_mgr)
         image = render_pkg["render"]
 
         # Loss
@@ -201,6 +200,7 @@ def training_report(tb_writer, iteration, Ll1, loss, l1_loss, elapsed, testing_i
                 l1_test = 0.0
                 psnr_test = 0.0
                 for idx, viewpoint in enumerate(config['cameras']):
+                    # no need to append swin_mgr to render when test time, it can just render by current frame info
                     image = torch.clamp(renderFunc(viewpoint, scene.gaussians, *renderArgs)["render"], 0.0, 1.0)
                     gt_image = torch.clamp(viewpoint.original_image.to("cuda"), 0.0, 1.0)
                     if tb_writer and (idx < 5):

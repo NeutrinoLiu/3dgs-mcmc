@@ -99,3 +99,69 @@ def render(viewpoint_camera, pc : GaussianModel, pipe, bg_color : torch.Tensor, 
             "visibility_filter" : radii > 0,
             "radii": radii,
             "is_used": is_used}
+
+
+def deformable_render(viewpoint_camera, pc : GaussianModel, pipe, bg_color : torch.Tensor, scaling_modifier = 1.0, override_color = None,
+                      swin_mgr=None):
+    """
+    Render the scene. 
+    also take camera.frame into consideration
+    
+    Background tensor (bg_color) must be on GPU!
+    """
+ 
+    # Create zero tensor. We will use it to make pytorch return gradients of the 2D (screen-space) means
+    screenspace_points = torch.zeros_like(pc.get_xyz, dtype=pc.get_xyz.dtype, requires_grad=True, device="cuda") + 0
+    try:
+        screenspace_points.retain_grad()
+    except:
+        pass
+
+    # Set up rasterization configuration
+    tanfovx = math.tan(viewpoint_camera.FoVx * 0.5)
+    tanfovy = math.tan(viewpoint_camera.FoVy * 0.5)
+
+    raster_settings = GaussianRasterizationSettings(
+        image_height=int(viewpoint_camera.image_height),
+        image_width=int(viewpoint_camera.image_width),
+        tanfovx=tanfovx,
+        tanfovy=tanfovy,
+        bg=bg_color,
+        scale_modifier=scaling_modifier,
+        viewmatrix=viewpoint_camera.world_view_transform,
+        projmatrix=viewpoint_camera.full_proj_transform,
+        sh_degree=pc.active_sh_degree,
+        campos=viewpoint_camera.camera_center,
+        prefiltered=False,
+        debug=pipe.debug
+    )
+
+    rasterizer = GaussianRasterizer(raster_settings=raster_settings)
+    frame = torch.tensor(viewpoint_camera.frame)
+    
+    means2D = screenspace_points
+    means3D = pc.get_xyz_at(frame, swin_mgr)
+    shs = pc.get_features
+    opacities = pc.get_opacity
+    scales = pc.get_scaling
+    rotations = pc.get_rotation_at(frame, swin_mgr)
+
+    # Rasterize visible Gaussians to image, obtain their radii (on screen). 
+
+    rendered_image, radii, is_used = rasterizer(
+        means3D = means3D,           # deformable
+        means2D = means2D,
+        shs = shs,
+        colors_precomp = None,
+        opacities = opacities,
+        scales = scales,
+        rotations = rotations,    # deformable
+        cov3D_precomp = None)
+
+    # Those Gaussians that were frustum culled or had a radius of 0 were not visible.
+    # They will be excluded from value updates used in the splitting criteria.
+    return {"render": rendered_image,
+            "viewspace_points": screenspace_points,
+            "visibility_filter" : radii > 0,
+            "radii": radii,
+            "is_used": is_used}
