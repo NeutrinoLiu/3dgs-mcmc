@@ -29,6 +29,9 @@ try:
 except ImportError:
     TENSORBOARD_FOUND = False
 
+# deform according to frame
+from utils.tempo_utils import deform, SliWinManager
+
 def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoint_iterations, checkpoint, debug_from, args):
     # breakpoint()
     if dataset.cap_max == -1:
@@ -54,6 +57,8 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
     progress_bar = tqdm(range(first_iter, opt.iterations), desc="Training progress")
     first_iter += 1
 
+    swin_mgr = SliWinManager(win_size=10, max_frame=scene.max_frame)
+
     for iteration in range(first_iter, opt.iterations + 1):        
         # if network_gui.conn == None:
         #     network_gui.try_connect()
@@ -78,10 +83,14 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
         if iteration % 1000 == 0:
             gaussians.oneupSHdegree()
 
-        # Pick a random Camera
+
+        window_start_frame = 0
+        window_end_frame = 5
+
+        # Pick a random Camera with in window [start, end]
         if not viewpoint_stack:
-            scene.clearTrainCamerasAt(args.frame)
-            viewpoint_stack = scene.getTrainCamerasAt(args.frame).copy()
+            scene.clearAllTrain()
+            viewpoint_stack = swin_mgr.fetch_cams(scene.getTrainCamerasAt)
             viewpoint_cam = viewpoint_stack.pop(randint(0, len(viewpoint_stack)-1))
         else:
             viewpoint_cam = viewpoint_stack.pop(randint(0, len(viewpoint_stack)-1))
@@ -92,7 +101,9 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
 
         bg = torch.rand((3), device="cuda") if opt.random_background else background
 
-        render_pkg = render(viewpoint_cam, gaussians, pipe, bg)
+        deformed_gaussians = deform(gaussians, viewpoint_cam.frame)
+
+        render_pkg = render(viewpoint_cam, deformed_gaussians, pipe, bg)
         image = render_pkg["render"]
 
         # Loss
@@ -118,7 +129,8 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
                 progress_bar.close()
 
             # Log and save
-            training_report(tb_writer, iteration, Ll1, loss, l1_loss, iter_start.elapsed_time(iter_end), testing_iterations, scene, render, (pipe, background), args)
+            training_report(tb_writer, iteration, Ll1, loss, l1_loss, iter_start.elapsed_time(iter_end), testing_iterations, scene, render, (pipe, background), args,
+                            swin_mgr)
             if (iteration in saving_iterations):
                 print("\n[ITER {}] Saving Gaussians".format(iteration))
                 scene.save(iteration)
@@ -169,7 +181,8 @@ def prepare_output_and_logger(args):
         print("Tensorboard not available: not logging progress")
     return tb_writer
 
-def training_report(tb_writer, iteration, Ll1, loss, l1_loss, elapsed, testing_iterations, scene : Scene, renderFunc, renderArgs, args):
+def training_report(tb_writer, iteration, Ll1, loss, l1_loss, elapsed, testing_iterations, scene : Scene, renderFunc, renderArgs, args,
+                    swin_mgr):
     if tb_writer:
         tb_writer.add_scalar('train_loss_patches/l1_loss', Ll1.item(), iteration)
         tb_writer.add_scalar('train_loss_patches/total_loss', loss.item(), iteration)
@@ -178,8 +191,10 @@ def training_report(tb_writer, iteration, Ll1, loss, l1_loss, elapsed, testing_i
     # Report test and samples of training set
     if iteration in testing_iterations:
         torch.cuda.empty_cache()
-        validation_configs = ({'name': 'test', 'cameras' : scene.getTestCamerasAt(args.frame)}, 
-                              {'name': 'train', 'cameras' : [scene.getTrainCamerasAt(args.frame)[idx % len(scene.getTrainCamerasAt(args.frame))] for idx in range(5, 30, 5)]})
+        test_cams = swin_mgr.fetch_cams(scene.getTestCamerasAt)
+        train_cams = swin_mgr.fetch_cams(scene.getTrainCamerasAt)
+        validation_configs = ({'name': 'test', 'cameras' : test_cams}, 
+                              {'name': 'train', 'cameras' : [train_cams[idx % len(train_cams)] for idx in range(5, 30, 5)]})
 
         for config in validation_configs:
             if config['cameras'] and len(config['cameras']) > 0:
@@ -205,9 +220,8 @@ def training_report(tb_writer, iteration, Ll1, loss, l1_loss, elapsed, testing_i
             tb_writer.add_histogram("scene/opacity_histogram", scene.gaussians.get_opacity, iteration)
             tb_writer.add_scalar('total_points', scene.gaussians.get_xyz.shape[0], iteration)
         
-        # test the correctness only 
-        scene.clearTestCamerasAt(args.frame)
-
+        # clear test cams
+        scene.clearAllTest()
         torch.cuda.empty_cache()
 
 if __name__ == "__main__":

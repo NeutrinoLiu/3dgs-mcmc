@@ -12,6 +12,11 @@ all cameras structure:
     cams_at[t] = {cam1 ... camN}
 
 
-TODO dynamically load dataset at frame (t)
-load()
-unload()
+dynamically load dataset at frame (t)
+    load()
+    unload()
+
+make the gaussians spatialtempo
+    add new paras
+    add transformation function
+    make time a tensor not a cpu value

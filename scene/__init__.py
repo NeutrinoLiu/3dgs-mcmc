@@ -145,22 +145,23 @@ class DynamicScene:
                 json.dump(json_cams, file, indent=4)
 
         assert len(scene_info.test_cam_at) == len(scene_info.train_cam_at), "time length of test cam is different from train"
-        max_frame = len(scene_info.test_cam_at)
+        self.max_frame = len(scene_info.test_cam_at)
+        
         if shuffle:
-            for t in range(max_frame):
+            for t in range(self.max_frame):
                 random.shuffle(scene_info.train_cam_at[t])  # Multi-res consistent random shuffling
                 random.shuffle(scene_info.test_cam_at[t])  # Multi-res consistent random shuffling
 
         self.cameras_extent = scene_info.nerf_normalization["radius"]
 
         # --------------- load cams in scene_info to actual cam objects -------------- #
-        for t in range(max_frame):
+        for t in range(self.max_frame):
             for resolution_scale in resolution_scales:
                 train_cams = {}
-                print(f"Loading Training Cameras @ frame {t}")
+                print(f"PRE-loading Train Cameras @ frame {t}")
                 train_cams[resolution_scale] = cameraList_from_camInfos_lazy(scene_info.train_cam_at[t], resolution_scale, args)
                 test_cams = {}
-                print(f"Loading Test Cameras @ frame {t}")
+                print(f"PRE-loading Test Cameras  @ frame {t}")
                 test_cams[resolution_scale] = cameraList_from_camInfos_lazy(scene_info.test_cam_at[t], resolution_scale, args)
             self.train_cam_at.append(train_cams)
             self.test_cam_at.append(test_cams)
@@ -186,6 +187,22 @@ class DynamicScene:
         assert t >=0 and t < len(self.test_cam_at), f"invalid time frame {t}"
         return self.activate(t, scale, test=True)
 
+    def clearAllTrain(self, tolerance=10):
+        activated = list(filter(lambda x: not x[-1], # all train frames
+                           self.activated_frame_scale))
+        if len(activated) <= tolerance: return
+        for fands in activated:
+            frame, scale, test = fands
+            self.deactivate(frame, scale, test)
+            
+    def clearAllTest(self, tolerance=20):
+        activated = list(filter(lambda x: x[-1], # all test frames
+                           self.activated_frame_scale))
+        if len(activated) <= tolerance: return
+        for fands in activated:
+            frame, scale, test = fands
+            self.deactivate(frame, scale, test)
+            
     def clearTrainCamerasAt(self, t, scale=1.0):
         assert t >=0 and t < len(self.train_cam_at), f"invalid time frame {t}"
         return self.deactivate(t, scale, test=False)

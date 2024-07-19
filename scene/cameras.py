@@ -88,6 +88,7 @@ class LazyCamera(nn.Module):
                  image_name, uid,
                  trans=np.array([0.0, 0.0, 0.0]), scale=1.0, data_device = "cuda",
                   # new member fields
+                 frame=0,
                  extra_para=None,
                  resolution_scale=1.0,
                  args_resolution=-1,
@@ -121,6 +122,9 @@ class LazyCamera(nn.Module):
             print(e)
             print(f"[Warning] Custom device {data_device} failed, fallback to default cuda device" )
             self.data_device = torch.device("cuda")
+
+
+        self.frame = frame
 
         self.original_image = None
         self.image_width = None

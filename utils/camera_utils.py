@@ -97,6 +97,7 @@ def cameraList_from_camInfos_lazy(cam_infos, resolution_scale, args):
                   image=None, gt_alpha_mask=None,
                   image_name=c.image_name, uid=id, data_device=args.data_device,
                   # new member fields
+                  frame=c.frame,
                   extra_para=c.extra_para,
                   resolution_scale = resolution_scale,
                   args_resolution = args.resolution,
