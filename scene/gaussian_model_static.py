@@ -9,7 +9,9 @@
 # For inquiries contact  george.drettakis@inria.fr
 #
 
-# ----------------- this is a backup file for naive 3dgs-mcmc ---------------- #
+
+# ------- a modified 3dgs supporting deformation within a short window ------- #
+# ----------------------------- bliu277@wisc.edu ----------------------------- #
 
 import torch
 import numpy as np
@@ -28,6 +30,9 @@ from utils.tempo_utils import deform
 class GaussianModel:
 
     def setup_functions(self):
+        '''
+        activations to ensure data range
+        '''
         def build_covariance_from_scaling_rotation(scaling, scaling_modifier, rotation):
             L = build_scaling_rotation(scaling_modifier * scaling, rotation)
             actual_covariance = L @ L.transpose(1, 2)
@@ -46,6 +51,9 @@ class GaussianModel:
 
 
     def __init__(self, sh_degree : int):
+        '''
+        attributes
+        '''
         self.active_sh_degree = 0
         self.max_sh_degree = sh_degree  
         self._xyz = torch.empty(0)
@@ -60,9 +68,24 @@ class GaussianModel:
         self.optimizer = None
         self.percent_dense = 0
         self.spatial_lr_scale = 0
+
+        '''
+        spatial model
+        currently we use a native circular motion model,
+        maybe we could use quarterion for temporal rotation in the future
+        '''
+        self._drift_v = torch.empty(0) # float(3) linear volocity.
+        self._drift_w = torch.empty(0) # float(1) angular volocity
+        self._drift_o = torch.empty(0) # float(3) center of circular motion
+        self._drift_n = torch.empty(0) # float(3) norm of circular motion plane
+
         self.setup_functions()
 
     def capture(self):
+        '''
+        training context snapthot
+        dump
+        '''
         return (
             self.active_sh_degree,
             self._xyz,
@@ -79,6 +102,10 @@ class GaussianModel:
         )
     
     def restore(self, model_args, training_args):
+        '''
+        training context snapshot
+        load
+        '''
         (self.active_sh_degree, 
         self._xyz, 
         self._features_dc, 
@@ -126,6 +153,9 @@ class GaussianModel:
             self.active_sh_degree += 1
 
     def create_from_pcd(self, pcd : BasicPointCloud, spatial_lr_scale : float):
+        '''
+        init from colmap SfM key points
+        '''
         self.spatial_lr_scale = spatial_lr_scale
         fused_point_cloud = torch.tensor(np.asarray(pcd.points)).float().cuda()
         fused_color = RGB2SH(torch.tensor(np.asarray(pcd.colors)).float().cuda())
@@ -151,6 +181,9 @@ class GaussianModel:
         self.max_radii2D = torch.zeros((self.get_xyz.shape[0]), device="cuda")
 
     def training_setup(self, training_args):
+        '''
+        learning rate & optimizor setup
+        '''
         self.percent_dense = training_args.percent_dense
         self.xyz_gradient_accum = torch.zeros((self.get_xyz.shape[0], 1), device="cuda")
         self.denom = torch.zeros((self.get_xyz.shape[0], 1), device="cuda")
@@ -193,6 +226,10 @@ class GaussianModel:
         return l
 
     def save_ply(self, path):
+        '''
+        gaussians point cloud only
+        dump
+        '''
         mkdir_p(os.path.dirname(path))
 
         xyz = self._xyz.detach().cpu().numpy()
@@ -212,6 +249,10 @@ class GaussianModel:
         PlyData([el]).write(path)
 
     def load_ply(self, path):
+        '''
+        gaussians point cloud only
+        load
+        '''
         plydata = PlyData.read(path)
 
         xyz = np.stack((np.asarray(plydata.elements[0]["x"]),
@@ -254,31 +295,15 @@ class GaussianModel:
 
         self.active_sh_degree = self.max_sh_degree
 
-    def reset_opacity(self):
-        raise NotImplementedError
-
-    def replace_tensor_to_optimizer(self, tensor, name):
-        raise NotImplementedError
-
-    def _prune_optimizer(self, mask):
-        raise NotImplementedError
-
-    def prune_points(self, mask):
-        raise NotImplementedError
-
-    def densify_and_split(self, grads, grad_threshold, scene_extent, N=2):
-        raise NotImplementedError
-
-    def densify_and_clone(self, grads, grad_threshold, scene_extent):
-        raise NotImplementedError
-
-    def densify_and_prune(self, max_grad, min_opacity, extent, max_screen_size):
-        raise NotImplementedError
-
-    def add_densification_stats(self, viewspace_point_tensor, update_filter):
-        raise NotImplementedError
+    # ------------------------------ status related ------------------------------ #
+    
+    # ----------------------------- optimize related ----------------------------- #
 
     def cat_tensors_to_optimizer(self, tensors_dict):
+        '''
+        pretty similar to what replace_tensors_to_optimizer dose,
+        but it only extend para list and set NEW guassians' gradiant momentum to zero
+        '''
         optimizable_tensors = {}
         for group in self.optimizer.param_groups:
             assert len(group["params"]) == 1
@@ -301,6 +326,11 @@ class GaussianModel:
         return optimizable_tensors
 
     def densification_postfix(self, new_xyz, new_features_dc, new_features_rest, new_opacities, new_scaling, new_rotation, reset_params=True):
+        '''
+        para linked to optimizer get longer
+        update the reference in guassianModel object as well
+        '''
+        
         d = {"xyz": new_xyz,
         "f_dc": new_features_dc,
         "f_rest": new_features_rest,
@@ -322,6 +352,10 @@ class GaussianModel:
             self.max_radii2D = torch.zeros((self.get_xyz.shape[0]), device="cuda")
 
     def replace_tensors_to_optimizer(self, inds=None):
+        '''
+        basically do the same thing as what cat_tensors_to_optimizer() does,
+        but it further set the ORIGINAL copied guassians' gradiant momentum to zero
+        '''
         tensors_dict = {"xyz": self._xyz,
             "f_dc": self._features_dc,
             "f_rest": self._features_rest,
@@ -359,6 +393,10 @@ class GaussianModel:
 
     
     def _update_params(self, idxs, ratio):
+        '''
+        break those chosen gaussians into multiple weaker gaussians
+        return a list of REFERENCEs to new values of new gaussians
+        '''
         new_opacity, new_scaling = compute_relocation_cuda(
             opacity_old=self.get_opacity[idxs, 0],
             scale_old=self.get_scaling[idxs],
@@ -372,6 +410,10 @@ class GaussianModel:
 
 
     def _sample_alives(self, probs, num, alive_indices=None):
+        '''
+        find the candidate where new/dead gaussians will warp to
+        return either a list of index, or a ctr dict
+        '''
         probs = probs / (probs.sum() + torch.finfo(torch.float32).eps)
         sampled_idxs = torch.multinomial(probs, num, replacement=True)
         if alive_indices is not None:
@@ -381,7 +423,9 @@ class GaussianModel:
     
 
     def relocate_gs(self, dead_mask=None):
-
+        '''
+        move dead gaussian to those alives
+        '''
         if dead_mask.sum() == 0:
             return
 
@@ -412,6 +456,9 @@ class GaussianModel:
         
 
     def add_new_gs(self, cap_max):
+        '''
+        increase the number of gaussian by 5% each step until cap_max
+        '''
         current_num_points = self._opacity.shape[0]
         target_num = min(cap_max, int(1.05 * current_num_points))
         num_gs = max(0, target_num - current_num_points)
@@ -420,6 +467,9 @@ class GaussianModel:
             return 0
 
         probs = self.get_opacity.squeeze(-1) 
+
+        # idx (index of templates): a list indicates index of those to be copied, 
+        # ratio (ctr of templates's showup): a counter indicates the number of copy for those who is at the same index
         add_idx, ratio = self._sample_alives(probs=probs, num=num_gs)
 
         (
@@ -431,9 +481,11 @@ class GaussianModel:
             new_rotation 
         ) = self._update_params(add_idx, ratio=ratio)
 
+        # original high opacity gaussian get weakened first
         self._opacity[add_idx] = new_opacity
         self._scaling[add_idx] = new_scaling
 
+        # then add those new gaussians to the end of para list
         self.densification_postfix(new_xyz, new_features_dc, new_features_rest, new_opacity, new_scaling, new_rotation, reset_params=False)
         self.replace_tensors_to_optimizer(inds=add_idx)
 

@@ -143,6 +143,7 @@ def train_slide_window(dataset_args, train_args, pipe_args, args,
         render_ret = render(viewpoint_cam, gaussians, pipe_args, bg)
 
         image = render_ret['render']
+        pc = render_ret['input_gaussians']
         gt_image = viewpoint_cam.original_image.cuda()
 
         # image loss
@@ -150,8 +151,8 @@ def train_slide_window(dataset_args, train_args, pipe_args, args,
         Lssim = ssim(image, gt_image)
         loss = (1.0 - train_args.lambda_dssim) * Ll1 + train_args.lambda_dssim * (1.0 - Lssim)
         # mcmc regularization
-        loss += args.opacity_reg * torch.abs(gaussians.get_opacity).mean()
-        loss += args.scale_reg * torch.abs(gaussians.get_scaling).mean()
+        loss += args.opacity_reg * torch.abs(pc['opacity']).mean()
+        loss += args.scale_reg * torch.abs(pc['scaling']).mean()
         # arap regularization
         # TODO: add arap regularization
 
@@ -176,10 +177,11 @@ def train_slide_window(dataset_args, train_args, pipe_args, args,
             if (iter in args.save_iterations):
                 print("\n[ITER {}] Saving Gaussians".format(iter))
                 scene.save(iter)
-            
+
+            immature_pc = gaussians.get_immature_para()
             # ------------------------------- densification ------------------------------ #
             if iter < train_args.densify_until_iter and iter > train_args.densify_from_iter and iter % train_args.densification_interval == 0:
-                dead_mask = (gaussians.get_opacity <= 0.005).squeeze(-1)
+                dead_mask = (immature_pc['opacity'] <= 0.005).squeeze(-1)
                 gaussians.relocate_gs(dead_mask=dead_mask)
                 if genesis: # only increasing gaussian number for genesis
                     gaussians.add_new_gs(cap_max=args.cap_max)
@@ -189,17 +191,18 @@ def train_slide_window(dataset_args, train_args, pipe_args, args,
                 gaussians.optimizer.zero_grad(set_to_none=True)
 
                 # ----------------------------- add perturbation ----------------------------- #
-                # TODO: we only perturb immature gaussians
-                L = build_scaling_rotation(gaussians.get_scaling, gaussians.get_rotation)
+                # we only perturb immature gaussians
+                L = build_scaling_rotation(immature_pc['scaling'], immature_pc['rotation'])
                 noise_spread = L @ L.transpose(1, 2)
                 def op_sigmoid(x, k=100, x0=0.995):
                     return 1 / (1 + torch.exp(-k * (x - x0)))
-                noise_intensity = torch.randn_like(gaussians._xyz) * \
-                        (op_sigmoid(1-gaussians.get_opacity)) * \
+                noise_intensity = torch.randn_like(immature_pc['xyz']) * \
+                        ( op_sigmoid(1 - immature_pc['opacity']) ) * \
                         args.noise_lr * xyz_lr
                 noise_intensity = torch.bmm(noise_spread, noise_intensity.unsqueeze(-1)).squeeze(-1)
 
-                gaussians.xyz_perturb(noise_intensity)
+                #  _xyz it the para that we want to directly perturb
+                gaussians._xyz.add_(noise_intensity)
 
             # -------------------------------- check point ------------------------------- #
             # training status save
@@ -244,7 +247,7 @@ def train(args):
 
     # --------------------------- decay the genesis gs: -------------------------- #
     # each 1/N's life was reduced to [0, i) i in [1..N]
-    gaussians.decayGenesis() # genesis is not mature yet
+    gaussians.decay_genesis() # genesis is not mature yet
 
     swin_mgr.tick() # move the window to [1, N+1)
 
@@ -256,11 +259,11 @@ def train(args):
     gaussians.evolve(swin_mgr) 
 
     # ----------------------- start sliding window training ---------------------- #
-    while swin_mgr.end <= swin_mgr.max_frame:
+    while swin_mgr.frame_end <= swin_mgr.max_frame:
         train_slide_window(dataset_args, train_args, pipe_args, args, 
                            gaussians, scene, swin_mgr)
         
-        if swin_mgr.end < swin_mgr.max_frame:
+        if swin_mgr.frame_end < swin_mgr.max_frame:
             swin_mgr.tick()
             gaussians.evolve(swin_mgr)
 

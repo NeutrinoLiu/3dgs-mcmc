@@ -140,11 +140,13 @@ def deformable_render(viewpoint_camera, pc : GaussianModel, pipe, bg_color : tor
 
     frame = torch.tensor(viewpoint_camera.frame)
     means2D = screenspace_points
-    means3D = pc.get_xyz_at(frame, swin_mgr)
-    shs = pc.get_features
-    opacities = pc.get_opacity
-    scales = pc.get_scaling
-    rotations = pc.get_rotation_at(frame, swin_mgr)
+    paras = pc.get_basic_para_at(frame)
+
+    means3D = paras['xyz']
+    shs = paras['feature']
+    opacities = paras['opacity']
+    scales = paras['scaling']
+    rotations = paras['rotation']
 
     # Rasterize visible Gaussians to image, obtain their radii (on screen). 
 
@@ -164,4 +166,6 @@ def deformable_render(viewpoint_camera, pc : GaussianModel, pipe, bg_color : tor
             "viewspace_points": screenspace_points,
             "visibility_filter" : radii > 0,
             "radii": radii,
-            "is_used": is_used}
+            "is_used": is_used,
+            "input_gaussians": paras,
+            }

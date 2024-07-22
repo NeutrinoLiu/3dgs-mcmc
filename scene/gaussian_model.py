@@ -27,6 +27,12 @@ from utils.general_utils import strip_symmetric, build_scaling_rotation
 from utils.reloc_utils import compute_relocation_cuda
 from utils.tempo_utils import deform
 
+def indices_of(tensor):
+    '''
+    return the index of non-zero elements in the tensor
+    '''
+    return torch.nonzero(tensor.squeeze(-1) , as_tuple=True)[0]
+
 class GaussianModel:
 
     def setup_functions(self):
@@ -49,40 +55,62 @@ class GaussianModel:
 
         self.rotation_activation = torch.nn.functional.normalize
 
-
-    def __init__(self, sh_degree : int):
+    def __init__(self, sh_degree : int, max_lifespan : int):
         '''
         attributes
         '''
         self.active_sh_degree = 0
         self.max_sh_degree = sh_degree  
-        self._xyz = torch.empty(0)
-        self._features_dc = torch.empty(0)
-        self._features_rest = torch.empty(0)
-        self._scaling = torch.empty(0)
-        self._rotation = torch.empty(0)
-        self._opacity = torch.empty(0)
         self.max_radii2D = torch.empty(0)
         self.xyz_gradient_accum = torch.empty(0)
         self.denom = torch.empty(0)
         self.optimizer = None
         self.percent_dense = 0
         self.spatial_lr_scale = 0
+        self.max_lifespan = max_lifespan
+
+        self.setup_functions()
+
+        # immatured gaussians, gradient is needed here
+        self._xyz = torch.empty(0)
+        self._features_dc = torch.empty(0)
+        self._features_rest = torch.empty(0)
+        self._scaling = torch.empty(0)
+        self._rotation = torch.empty(0)
+        self._opacity = torch.empty(0)
+
+        self._frame_birth = torch.empty(0)
+        self._frame_start = torch.empty(0)
+        self._frame_end = torch.empty(0)
 
         '''
         spatial model
         currently we use a native circular motion model,
         maybe we could use quarterion for temporal rotation in the future
         '''
-        self._drift_v = torch.empty(0) # float(3) linear volocity.
-        self._drift_w = torch.empty(0) # float(1) angular volocity
-        self._drift_o = torch.empty(0) # float(3) center of circular motion
-        self._drift_n = torch.empty(0) # float(3) norm of circular motion plane
+        # self._drift_v = torch.empty(0) # float(3) linear volocity.
+        # self._drift_w = torch.empty(0) # float(1) angular volocity
+        # self._drift_o = torch.empty(0) # float(3) center of circular motion
+        # self._drift_n = torch.empty(0) # float(3) norm of circular motion plane
 
-        self.setup_functions()
+
+        '''
+        matured gaussians, no gradient is needed here
+        '''
+        self._matured_xyz = torch.empty(0).cuda()
+        self._matured_features_dc = torch.empty(0).cuda()
+        self._matured_features_rest = torch.empty(0).cuda()
+        self._matured_scaling = torch.empty(0).cuda()
+        self._matured_rotation = torch.empty(0).cuda()
+        self._matured_opacity = torch.empty(0).cuda()
+
+        self._matured_frame_birth = torch.empty(0).cuda()
+        self._matured_frame_start = torch.empty(0).cuda()
+        self._matured_frame_end = torch.empty(0).cuda()
 
     def capture(self):
         '''
+        TODO
         training context snapthot
         dump
         '''
@@ -103,6 +131,7 @@ class GaussianModel:
     
     def restore(self, model_args, training_args):
         '''
+        TODO
         training context snapshot
         load
         '''
@@ -125,28 +154,30 @@ class GaussianModel:
 
     @property
     def get_scaling(self):
+        raise NotImplementedError
         return self.scaling_activation(self._scaling)
     
     @property
     def get_rotation(self):
+        raise NotImplementedError
         return self.rotation_activation(self._rotation)
     
     @property
     def get_xyz(self):
+        raise NotImplementedError
         return self._xyz
     
     @property
     def get_features(self):
+        raise NotImplementedError
         features_dc = self._features_dc
         features_rest = self._features_rest
         return torch.cat((features_dc, features_rest), dim=1)
     
     @property
     def get_opacity(self):
+        raise NotImplementedError
         return self.opacity_activation(self._opacity)
-    
-    def get_covariance(self, scaling_modifier = 1):
-        return self.covariance_activation(self.get_scaling, scaling_modifier, self._rotation)
 
     def oneupSHdegree(self):
         if self.active_sh_degree < self.max_sh_degree:
@@ -180,6 +211,11 @@ class GaussianModel:
         self._opacity = nn.Parameter(opacities.requires_grad_(True))
         self.max_radii2D = torch.zeros((self.get_xyz.shape[0]), device="cuda")
 
+        # init from colmap SfM key points, use full lifespan
+        self._frame_birth = torch.zeros((self.get_xyz.shape[0]), device="cuda")
+        self._frame_start = torch.zeros((self.get_xyz.shape[0]), device="cuda")
+        self._frame_end   = torch.full((self.get_xyz.shape[0]), self.max_lifespan, device="cuda")
+
     def training_setup(self, training_args):
         '''
         learning rate & optimizor setup
@@ -212,6 +248,9 @@ class GaussianModel:
                 return lr
 
     def construct_list_of_attributes(self):
+        '''
+        TODO
+        '''
         l = ['x', 'y', 'z', 'nx', 'ny', 'nz']
         # All channels except the 3 DC
         for i in range(self._features_dc.shape[1]*self._features_dc.shape[2]):
@@ -227,6 +266,7 @@ class GaussianModel:
 
     def save_ply(self, path):
         '''
+        TODO
         gaussians point cloud only
         dump
         '''
@@ -250,6 +290,7 @@ class GaussianModel:
 
     def load_ply(self, path):
         '''
+        TODO
         gaussians point cloud only
         load
         '''
@@ -295,9 +336,134 @@ class GaussianModel:
 
         self.active_sh_degree = self.max_sh_degree
 
-    # ------------------------------ status related ------------------------------ #
-    
-    # ----------------------------- optimize related ----------------------------- #
+    # ^----------------------------- status related ------------------------------ #
+
+    # -------------------------- sliding window related -------------------------- #
+    def decay_genesis(self):
+        # divide all gs into N groups, randomly
+        # each group reduce the frame_end by i, where i in [0, N-1]
+        num_of_groups = self.max_lifespan
+        assert self._frame_end.shape[0] % num_of_groups == 0, \
+            "The number of gaussians should be divisible by number of grouping (i.e. max_lifespan)"
+        assert self._frame_end.shape[0] == self._opacity.shape[0], \
+            "The number of gaussians should be the same in opacity and frame_end"
+        per_group_size = self._frame_end.shape[0] // num_of_groups
+
+        # high opacity genessis gaussian deserves longer lifespan
+        _, indices = torch.sort(self._opacity.squeeze(-1), descending=True)
+        # indices = torch.randperm(self._xyz.shape[0], device="cuda")
+        for i in range(num_of_groups):
+            start_idx = i * per_group_size
+            group_indices = indices[start_idx : start_idx + per_group_size]
+            self._frame_end[group_indices] -= i
+
+    def _mature(self, mature_idx):
+        '''
+        move gaussians from immatured to matured
+        '''
+        len_before = self._matured_xyz.shape[0]
+
+        self._matured_xyz = torch.cat((self._matured_xyz, self._xyz[mature_idx]), dim=0).detach()
+        self._matured_features_dc = torch.cat((self._matured_features_dc, self._features_dc[mature_idx]), dim=0).detach()
+        self._matured_features_rest = torch.cat((self._matured_features_rest, self._features_rest[mature_idx]), dim=0).detach()
+        self._matured_scaling = torch.cat((self._matured_scaling, self._scaling[mature_idx]), dim=0).detach()
+        self._matured_rotation = torch.cat((self._matured_rotation, self._rotation[mature_idx]), dim=0).detach()
+        self._matured_opacity = torch.cat((self._matured_opacity, self._opacity[mature_idx]), dim=0).detach()
+
+        self._matured_frame_birth = torch.cat((self._matured_frame_birth, self._frame_birth[mature_idx]), dim=0).detach()
+        self._matured_frame_start = torch.cat((self._matured_frame_start, self._frame_start[mature_idx]), dim=0).detach()
+        self._matured_frame_end = torch.cat((self._matured_frame_end, self._frame_end[mature_idx]), dim=0).detach()
+
+        len_after = self._matured_xyz.shape[0]
+        print("Matured {} gaussians, total {} now".format(len_after - len_before, len_after))
+
+    def _rollover(self, mature_idx, elapse):
+
+        # we need a dynamic model to update the motion related paras
+        # self._xyz = self._xyz
+        # self._features_dc = self._features_dc
+        # self._features_rest = self._features_rest
+        # self._scaling = self._scaling
+        # self._rotation = self._rotation
+        # self._opacity = self._opacity
+
+        self._frame_birth[mature_idx] = self._frame_end[mature_idx]
+        self._frame_start[mature_idx] = self._frame_birth[mature_idx]
+        self._frame_end[mature_idx] += elapse
+
+    def evolve(self, swin_mgr):
+        # find out those immatured gaussians who canot fill up the whole window
+        # - reproduce them
+        # - mature them
+        # NOTE: we have a constraint that MAX_LIFESPAN == SWIN_SIZE
+        #       so we can safely assume that gassians need to be matured
+        #       are those who can not fill up the whole window
+        
+        # strictly smaller than sliding window
+        mature_idx = indices_of(self._frame_end < swin_mgr.frame_end)
+
+        # the acutual practice could be such that
+        #  we snapshot the matured gaussians
+        #  and then expand their lifespan 
+        #           update their motion related paras
+        #  so that they are the next generation now
+
+        self._mature(mature_idx)
+        self._rollover(mature_idx, self.max_lifespan)
+
+    def get_immature_para(self, para=["xyz", "feature", "opacity", "scaling", "rotation"]):
+        '''
+        return a dict of gs paras for all immuture gaussians
+        '''
+        ret = {}
+        for p in set(para):
+            if p == "xyz":
+                ret[p] = self._xyz
+            elif p == "feature":
+                ret[p] = torch.cat(self._features_dc, self._features_rest, dim=1)
+            elif p == "opacity":
+                ret[p] = self.opacity_activation(self._opacity)
+            elif p == "scaling":
+                ret[p] = self.scaling_activation(self._scaling)
+            elif p == "rotation":
+                ret[p] = self.rotation_activation(self._rotation)
+            else:
+                assert False, "Unknown parameter {}".format(p)
+        return ret
+
+    def get_basic_para_at(self, frame, para=["xyz", "feature", "opacity", "scaling", "rotation"]):
+        '''
+        return a dict of gs paras given a frame
+        '''
+        ret = {}
+        immature_frame_idx = indices_of(self._frame_start <= frame and self._frame_end > frame)
+        matured_frame_idx = indices_of(self._matured_frame_start <= frame and self._matured_frame_end > frame)
+        for p in set(para):
+            if p == "xyz":
+                # TODO: deform the xyz
+                ret[p] = torch.cat(self._xyz[immature_frame_idx], self._matured_xyz[matured_frame_idx], dim=0)
+            elif p == "feature":
+                im_feature = torch.cat(self._features_dc[immature_frame_idx],
+                                       self._features_rest[immature_frame_idx], dim=1)
+                ma_feature = torch.cat(self._matured_features_dc[matured_frame_idx],
+                                       self._matured_features_rest[matured_frame_idx], dim=1)
+                ret[p] = torch.cat(im_feature, ma_feature, dim=0)
+            elif p == "opacity":
+                ret[p] = self.opacity_activation(torch.cat(self._opacity[immature_frame_idx],
+                                                            self._matured_opacity[matured_frame_idx], dim=0))
+            elif p == "scaling":
+                ret[p] = self.scaling_activation(torch.cat(self._scaling[immature_frame_idx],
+                                                            self._matured_scaling[matured_frame_idx], dim=0))
+            elif p == "rotation":
+                # TODO: deform the rotation
+                ret[p] = self.rotation_activation(torch.cat(self._rotation[immature_frame_idx],
+                                                             self._matured_rotation[matured_frame_idx], dim=0))
+            else:
+                assert False, "Unknown parameter {}".format(p)
+        return ret
+
+    # v---------------------------- optimize related ----------------------------- #
+
 
     def cat_tensors_to_optimizer(self, tensors_dict):
         '''
@@ -391,7 +557,6 @@ class GaussianModel:
 
         return optimizable_tensors
 
-    
     def _update_params(self, idxs, ratio):
         '''
         break those chosen gaussians into multiple weaker gaussians
@@ -420,7 +585,6 @@ class GaussianModel:
             sampled_idxs = alive_indices[sampled_idxs]
         ratio = torch.bincount(sampled_idxs).unsqueeze(-1)
         return sampled_idxs, ratio
-    
 
     def relocate_gs(self, dead_mask=None):
         '''
@@ -453,7 +617,6 @@ class GaussianModel:
         self._scaling[reinit_idx] = self._scaling[dead_indices]
 
         self.replace_tensors_to_optimizer(inds=reinit_idx) 
-        
 
     def add_new_gs(self, cap_max):
         '''
@@ -492,12 +655,4 @@ class GaussianModel:
         return num_gs
 
 
-    # ------------------------ deformable xyz and rotation ----------------------- #
-    def get_xyz_at(self, t, swin_mgr):
-        test = swin_mgr is None
-        return self._xyz
-    
-    def get_rotation_at(self, t, swin_mgr):
-        test = swin_mgr is None
-        return self.rotation_activation(self._rotation)
     
