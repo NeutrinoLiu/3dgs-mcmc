@@ -33,7 +33,7 @@ except ImportError:
 # deform according to frame
 from utils.tempo_utils import deform, SliWinManager
 
-def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoint_iterations, checkpoint, debug_from, args):
+def training(dataset, opt, pipe, args):
     # breakpoint()
     if dataset.cap_max == -1:
         print("Please specify the maximum number of Gaussians using --cap_max.")
@@ -43,8 +43,8 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
     gaussians = GaussianModel(dataset.sh_degree)
     scene = DynamicScene(dataset, gaussians)
     gaussians.training_setup(opt)
-    if checkpoint:
-        (model_params, first_iter) = torch.load(checkpoint)
+    if args.start_checkpoint:
+        (model_params, first_iter) = torch.load(args.start_checkpoint)
         gaussians.restore(model_params, opt)
 
     bg_color = [1, 1, 1] if dataset.white_background else [0, 0, 0]
@@ -60,21 +60,7 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
 
     swin_mgr = SliWinManager(win_size=10, max_frame=scene.max_frame)
 
-    for iteration in range(first_iter, opt.iterations + 1):        
-        # if network_gui.conn == None:
-        #     network_gui.try_connect()
-        # while network_gui.conn != None:
-        #     try:
-        #         net_image_bytes = None
-        #         custom_cam, do_training, pipe.convert_SHs_python, pipe.compute_cov3D_python, keep_alive, scaling_modifer = network_gui.receive()
-        #         if custom_cam != None:
-        #             net_image = render(custom_cam, gaussians, pipe, background, scaling_modifer)["render"]
-        #             net_image_bytes = memoryview((torch.clamp(net_image, min=0, max=1.0) * 255).byte().permute(1, 2, 0).contiguous().cpu().numpy())
-        #         network_gui.send(net_image_bytes, dataset.source_path)
-        #         if do_training and ((iteration < int(opt.iterations)) or not keep_alive):
-        #             break
-        #     except Exception as e:
-        #         network_gui.conn = None
+    for iteration in range(first_iter, opt.iterations + 1):
 
         iter_start.record()
 
@@ -93,7 +79,7 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
             viewpoint_cam = viewpoint_stack.pop(randint(0, len(viewpoint_stack)-1))
 
         # Render
-        if (iteration - 1) == debug_from:
+        if (iteration - 1) == args.debug_from:
             pipe.debug = True
 
         bg = torch.rand((3), device="cuda") if opt.random_background else background
@@ -101,8 +87,7 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
         # need swin_mgr when perform training: 
         # knowing which part gaussian is frozen
         # and which part gaussian is mutable
-        render_pkg = render(viewpoint_cam, gaussians, pipe, bg,
-                            swin_mgr=swin_mgr)
+        render_pkg = render(viewpoint_cam, gaussians, pipe, bg)
         image = render_pkg["render"]
 
         # Loss
@@ -128,9 +113,9 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
                 progress_bar.close()
 
             # Log and save
-            training_report(tb_writer, iteration, Ll1, loss, l1_loss, iter_start.elapsed_time(iter_end), testing_iterations, scene, render, (pipe, background), args,
+            training_report(tb_writer, iteration, Ll1, loss, l1_loss, iter_start.elapsed_time(iter_end), args.test_iterations, scene, render, (pipe, background), args,
                             swin_mgr)
-            if (iteration in saving_iterations):
+            if (iteration in args.save_iterations):
                 print("\n[ITER {}] Saving Gaussians".format(iteration))
                 scene.save(iteration)
 
@@ -154,7 +139,7 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
                 noise = torch.bmm(actual_covariance, noise.unsqueeze(-1)).squeeze(-1)
                 gaussians._xyz.add_(noise)
 
-            if (iteration in checkpoint_iterations):
+            if (iteration in args.checkpoint_iterations):
                 print("\n[ITER {}] Saving Checkpoint".format(iteration))
                 torch.save((gaussians.capture(), iteration), scene.model_path + "/chkpnt" + str(iteration) + ".pth")
 
@@ -252,7 +237,7 @@ if __name__ == "__main__":
     # Start GUI server, configure and run training
     # network_gui.init(args.ip, args.port)
     torch.autograd.set_detect_anomaly(args.detect_anomaly)
-    training(lp.extract(args), op.extract(args), pp.extract(args), args.test_iterations, args.save_iterations, args.checkpoint_iterations, args.start_checkpoint, args.debug_from, args)
+    training(lp.extract(args), op.extract(args), pp.extract(args), args)
 
     # All done
     print("\nTraining complete.")

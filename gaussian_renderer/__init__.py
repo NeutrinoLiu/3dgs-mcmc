@@ -109,13 +109,6 @@ def deformable_render(viewpoint_camera, pc : GaussianModel, pipe, bg_color : tor
     
     Background tensor (bg_color) must be on GPU!
     """
- 
-    # Create zero tensor. We will use it to make pytorch return gradients of the 2D (screen-space) means
-    screenspace_points = torch.zeros_like(pc.get_xyz, dtype=pc.get_xyz.dtype, requires_grad=True, device="cuda") + 0
-    try:
-        screenspace_points.retain_grad()
-    except:
-        pass
 
     # Set up rasterization configuration
     tanfovx = math.tan(viewpoint_camera.FoVx * 0.5)
@@ -137,8 +130,15 @@ def deformable_render(viewpoint_camera, pc : GaussianModel, pipe, bg_color : tor
     )
 
     rasterizer = GaussianRasterizer(raster_settings=raster_settings)
+
+    # Create zero tensor. We will use it to make pytorch return gradients of the 2D (screen-space) means
+    screenspace_points = torch.zeros_like(pc.get_xyz, dtype=pc.get_xyz.dtype, requires_grad=True, device="cuda") + 0
+    try:
+        screenspace_points.retain_grad()
+    except:
+        pass
+
     frame = torch.tensor(viewpoint_camera.frame)
-    
     means2D = screenspace_points
     means3D = pc.get_xyz_at(frame, swin_mgr)
     shs = pc.get_features
