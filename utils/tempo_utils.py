@@ -1,5 +1,3 @@
-import torch
-
 class SliWinManager:
     def __init__(self, win_size, max_frame):
         self.frame_start = 0
@@ -13,6 +11,8 @@ class SliWinManager:
         for f in range(self.frame_start, self.frame_end):
             ret += fetcher(f).copy()
         return ret
+    def frames(self):
+        return range(self.frame_start, self.frame_end)
 
 def deform(gs, frame):
     return gs

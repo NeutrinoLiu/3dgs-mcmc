@@ -164,7 +164,6 @@ class GaussianModel:
     
     @property
     def get_xyz(self):
-        raise NotImplementedError
         return self._xyz
     
     @property
@@ -212,9 +211,9 @@ class GaussianModel:
         self.max_radii2D = torch.zeros((self.get_xyz.shape[0]), device="cuda")
 
         # init from colmap SfM key points, use full lifespan
-        self._frame_birth = torch.zeros((self.get_xyz.shape[0]), device="cuda")
-        self._frame_start = torch.zeros((self.get_xyz.shape[0]), device="cuda")
-        self._frame_end   = torch.full((self.get_xyz.shape[0]), self.max_lifespan, device="cuda")
+        self._frame_birth = torch.zeros((self.get_xyz.shape[0]), device="cuda", dtype=torch.int32)
+        self._frame_start = torch.zeros((self.get_xyz.shape[0]), device="cuda", dtype=torch.int32)
+        self._frame_end   = torch.full((self.get_xyz.shape[0],), self.max_lifespan, device="cuda", dtype=torch.int32)
 
     def training_setup(self, training_args):
         '''
@@ -411,7 +410,8 @@ class GaussianModel:
         self._mature(mature_idx)
         self._rollover(mature_idx, self.max_lifespan)
 
-    def get_immature_para(self, para=["xyz", "feature", "opacity", "scaling", "rotation"]):
+    def get_immature_para(self, para=["xyz", "feature", "opacity", "scaling", "rotation",
+                                      "start_frame", "end_frame", "birth_frame"]):
         '''
         return a dict of gs paras for all immuture gaussians
         '''
@@ -420,13 +420,19 @@ class GaussianModel:
             if p == "xyz":
                 ret[p] = self._xyz
             elif p == "feature":
-                ret[p] = torch.cat(self._features_dc, self._features_rest, dim=1)
+                ret[p] = torch.cat((self._features_dc, self._features_rest), dim=1)
             elif p == "opacity":
                 ret[p] = self.opacity_activation(self._opacity)
             elif p == "scaling":
                 ret[p] = self.scaling_activation(self._scaling)
             elif p == "rotation":
                 ret[p] = self.rotation_activation(self._rotation)
+            elif p == "start_frame":
+                ret[p] = self._frame_start
+            elif p == "end_frame":
+                ret[p] = self._frame_end
+            elif p == "birth_frame":
+                ret[p] = self._frame_birth
             else:
                 assert False, "Unknown parameter {}".format(p)
         return ret
@@ -436,28 +442,28 @@ class GaussianModel:
         return a dict of gs paras given a frame
         '''
         ret = {}
-        immature_frame_idx = indices_of(self._frame_start <= frame and self._frame_end > frame)
-        matured_frame_idx = indices_of(self._matured_frame_start <= frame and self._matured_frame_end > frame)
+        immature_frame_idx = indices_of((self._frame_start <= frame) & (self._frame_end > frame))
+        matured_frame_idx = indices_of((self._matured_frame_start <= frame) & (self._matured_frame_end > frame))
         for p in set(para):
             if p == "xyz":
                 # TODO: deform the xyz
-                ret[p] = torch.cat(self._xyz[immature_frame_idx], self._matured_xyz[matured_frame_idx], dim=0)
+                ret[p] = torch.cat((self._xyz[immature_frame_idx], self._matured_xyz[matured_frame_idx]), dim=0)
             elif p == "feature":
-                im_feature = torch.cat(self._features_dc[immature_frame_idx],
-                                       self._features_rest[immature_frame_idx], dim=1)
-                ma_feature = torch.cat(self._matured_features_dc[matured_frame_idx],
-                                       self._matured_features_rest[matured_frame_idx], dim=1)
-                ret[p] = torch.cat(im_feature, ma_feature, dim=0)
+                im_feature = torch.cat((self._features_dc[immature_frame_idx],
+                                       self._features_rest[immature_frame_idx]), dim=1)
+                ma_feature = torch.cat((self._matured_features_dc[matured_frame_idx],
+                                       self._matured_features_rest[matured_frame_idx]), dim=1)
+                ret[p] = torch.cat((im_feature, ma_feature), dim=0)
             elif p == "opacity":
-                ret[p] = self.opacity_activation(torch.cat(self._opacity[immature_frame_idx],
-                                                            self._matured_opacity[matured_frame_idx], dim=0))
+                ret[p] = self.opacity_activation(torch.cat((self._opacity[immature_frame_idx],
+                                                            self._matured_opacity[matured_frame_idx]), dim=0))
             elif p == "scaling":
-                ret[p] = self.scaling_activation(torch.cat(self._scaling[immature_frame_idx],
-                                                            self._matured_scaling[matured_frame_idx], dim=0))
+                ret[p] = self.scaling_activation(torch.cat((self._scaling[immature_frame_idx],
+                                                            self._matured_scaling[matured_frame_idx]), dim=0))
             elif p == "rotation":
                 # TODO: deform the rotation
-                ret[p] = self.rotation_activation(torch.cat(self._rotation[immature_frame_idx],
-                                                             self._matured_rotation[matured_frame_idx], dim=0))
+                ret[p] = self.rotation_activation(torch.cat((self._rotation[immature_frame_idx],
+                                                             self._matured_rotation[matured_frame_idx]), dim=0))
             else:
                 assert False, "Unknown parameter {}".format(p)
         return ret
@@ -562,9 +568,10 @@ class GaussianModel:
         break those chosen gaussians into multiple weaker gaussians
         return a list of REFERENCEs to new values of new gaussians
         '''
+        para = self.get_immature_para(para=["opacity", "scaling"])
         new_opacity, new_scaling = compute_relocation_cuda(
-            opacity_old=self.get_opacity[idxs, 0],
-            scale_old=self.get_scaling[idxs],
+            opacity_old=para['opacity'][idxs, 0],
+            scale_old=para['scaling'][idxs],
             N=ratio[idxs, 0] + 1
         )
         new_opacity = torch.clamp(new_opacity.unsqueeze(-1), max=1.0 - torch.finfo(torch.float32).eps, min=0.005)
@@ -654,5 +661,35 @@ class GaussianModel:
 
         return num_gs
 
+    def relocate_gs_immuture(self, dead_mask, alive_mask):
+        '''
+        move dead gaussian to those alives
+        '''
+        if dead_mask.sum() == 0 or alive_mask.sum() == 0:
+            return
 
-    
+        dead_indices = dead_mask.nonzero(as_tuple=True)[0]
+        alive_indices = alive_mask.nonzero(as_tuple=True)[0]
+
+        # sample from alive ones based on opacity
+        op = self.get_immature_para(para=["opacity"])["opacity"]
+        probs = (op[alive_indices, 0]) 
+        reinit_idx, ratio = self._sample_alives(alive_indices=alive_indices, probs=probs, num=dead_indices.shape[0])
+
+        (
+            self._xyz[dead_indices], 
+            self._features_dc[dead_indices],
+            self._features_rest[dead_indices],
+            self._opacity[dead_indices],
+            self._scaling[dead_indices],
+            self._rotation[dead_indices] 
+        ) = self._update_params(reinit_idx, ratio=ratio)
+        
+        self._opacity[reinit_idx] = self._opacity[dead_indices]
+        self._scaling[reinit_idx] = self._scaling[dead_indices]
+
+        self.replace_tensors_to_optimizer(inds=reinit_idx)
+
+        viable = (self._frame_birth[dead_indices] <= self._frame_birth[reinit_idx]).unsqueeze(-1)
+        assert torch.all(viable), "The gaussians to be relocated should born earlier"
+        self._frame_start[dead_indices] = self._frame_start[reinit_idx]

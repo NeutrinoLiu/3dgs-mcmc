@@ -39,3 +39,5 @@ run_train 150000 1e-3 5e4 2
 run_train 150000 1e-4 5e4 2
 run_train 150000 1e-5 5e4 2
 run_train 150000 1e-6 5e4 2
+
+# python train_swin.py --source_path data/actor06_all --cap_max 100000 --scale_reg 1e-4 --opacity_reg 1e-4 --noise_lr 5e4 --init_type random --eval 

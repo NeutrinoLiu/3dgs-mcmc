@@ -4,6 +4,7 @@
 import torch
 import os
 import uuid
+import sys
 from random import randint
 from tqdm import tqdm
 from argparse import ArgumentParser, Namespace
@@ -29,7 +30,6 @@ except ImportError:
 
 # CONSTS
 SWIN_SIZE = 10 # actual is the max size 4090 could load the dataset
-MAX_CAP = 100_000
 
 def prepare_output_and_logger(args):    
     if not args.model_path:
@@ -147,7 +147,7 @@ def train_slide_window(dataset_args, train_args, pipe_args, args,
         gt_image = viewpoint_cam.original_image.cuda()
 
         # image loss
-        Ll1 = l1_loss(image, gt_image),
+        Ll1 = l1_loss(image, gt_image)
         Lssim = ssim(image, gt_image)
         loss = (1.0 - train_args.lambda_dssim) * Ll1 + train_args.lambda_dssim * (1.0 - Lssim)
         # mcmc regularization
@@ -181,8 +181,11 @@ def train_slide_window(dataset_args, train_args, pipe_args, args,
             immature_pc = gaussians.get_immature_para()
             # ------------------------------- densification ------------------------------ #
             if iter < train_args.densify_until_iter and iter > train_args.densify_from_iter and iter % train_args.densification_interval == 0:
-                dead_mask = (immature_pc['opacity'] <= 0.005).squeeze(-1)
-                gaussians.relocate_gs(dead_mask=dead_mask)
+                for f in swin_mgr.frames():
+                    dead_mask = ((immature_pc['opacity'] <= 0.005) & (immature_pc['birth_frame'] == f)).squeeze(-1)
+                    alive_mask = ((immature_pc['opacity'] > 0.005) & (immature_pc['birth_frame'] >= f)).squeeze(-1)
+                    gaussians.relocate_gs_immuture(dead_mask, alive_mask)
+
                 if genesis: # only increasing gaussian number for genesis
                     gaussians.add_new_gs(cap_max=args.cap_max)
             
@@ -211,30 +214,34 @@ def train_slide_window(dataset_args, train_args, pipe_args, args,
                 torch.save((gaussians.capture(), iter), scene.model_path + "/chkpnt" + str(iter) + ".pth")
 
 
-def train(args):
+def train():
     # ------------------------------- args parsing ------------------------------- #
     parser = ArgumentParser(description="Training script parameters")
-    dataset_args = ModelParams(parser).extract(args)
-    train_args = OptimizationParams(parser).extract(args)
-    pipe_args = PipelineParams(parser).extract(args)
+    lp = ModelParams(parser)
+    op = OptimizationParams(parser)
+    pp = PipelineParams(parser)
     parser.add_argument('--ip', type=str, default="127.0.0.1")
     parser.add_argument('--port', type=int, default=6009)
     parser.add_argument('--debug_from', type=int, default=-1)
     parser.add_argument('--detect_anomaly', action='store_true', default=False)
-    parser.add_argument("--test_iterations", nargs="+", type=int, default=list(range(2_000, 30_000, 1_000)))
+    parser.add_argument("--test_iterations", nargs="+", type=int, default=list(range(1_000, 30_000, 1_000)))
     parser.add_argument("--save_iterations", nargs="+", type=int, default=list(range(5_000, 30_000, 5_000)))
     parser.add_argument("--quiet", action="store_true")
     parser.add_argument("--checkpoint_iterations", nargs="+", type=int, default=[])
     parser.add_argument("--start_checkpoint", type=str, default = None)
-    args = parser.parse_args()
+    args = parser.parse_args(sys.argv[1:])
     args.save_iterations.append(args.iterations)
     print("Optimizing " + args.model_path)
+
+    dataset_args = lp.extract(args)
+    train_args = op.extract(args)
+    pipe_args = pp.extract(args)
 
     safe_state(args.quiet)
     torch.autograd.set_detect_anomaly(args.detect_anomaly)
 
     # ----------------------------------- init ----------------------------------- #
-    gaussians = SwinGaussianModel(dataset_args.sh_degree, lifespan=SWIN_SIZE)
+    gaussians = SwinGaussianModel(dataset_args.sh_degree, max_lifespan=SWIN_SIZE)
     scene = DynamicScene(dataset_args, gaussians)
     swin_mgr = SliWinManager(SWIN_SIZE, scene.max_frame)
 
@@ -272,5 +279,5 @@ if __name__ == "__main__":
     # ignore gaussian load/unload
     # i.e. all guassian still stays in GDDR
     # ignore check point
-    train(None)
+    train()
     
