@@ -29,7 +29,7 @@ except ImportError:
     TENSORBOARD_FOUND = False
 
 # CONSTS
-SWIN_SIZE = 10 # actual is the max size 4090 could load the dataset
+SWIN_SIZE = 4 # actual is the max size 4090 could load the dataset
 
 def prepare_output_and_logger(args):    
     if not args.model_path:
@@ -92,17 +92,18 @@ def training_report(tb_writer, iteration, Ll1, loss, l1_loss, elapsed, testing_i
                     tb_writer.add_scalar(config['name'] + '/loss_viewpoint - psnr', psnr_test, iteration)
 
         if tb_writer:
-            tb_writer.add_histogram("scene/opacity_histogram", scene.gaussians.get_opacity, iteration)
-            tb_writer.add_scalar('total_points', scene.gaussians.get_xyz.shape[0], iteration)
+            pc = scene.gaussians.get_immature_para(['xyz', 'opacity'])
+            tb_writer.add_histogram("scene/opacity_histogram", pc['opacity'], iteration)
+            tb_writer.add_scalar('total_points', pc['xyz'].shape[0], iteration)
         
         torch.cuda.empty_cache()
 
 def train_slide_window(dataset_args, train_args, pipe_args, args,
                        gaussians: SwinGaussianModel, scene: DynamicScene,
                        swin_mgr: SliWinManager, 
+                       tb_writer,
                        genesis: bool = False):
     first_iter = 0
-    tb_writer = prepare_output_and_logger(dataset_args)
 
     bg_color = [1, 1, 1] if dataset_args.white_background else [0, 0, 0]
     background = torch.tensor(bg_color, dtype=torch.float32, device="cuda")
@@ -144,6 +145,10 @@ def train_slide_window(dataset_args, train_args, pipe_args, args,
 
         image = render_ret['render']
         pc = render_ret['input_gaussians']
+        immature_pc = gaussians.get_immature_para()
+        if swin_mgr.frame_start > 0:
+            print(f"num of immature gaussians: {immature_pc['xyz'].shape[0]}")
+            print(f"num of total gaussians: {pc['xyz'].shape[0]}")
         gt_image = viewpoint_cam.original_image.cuda()
 
         # image loss
@@ -178,13 +183,9 @@ def train_slide_window(dataset_args, train_args, pipe_args, args,
                 print("\n[ITER {}] Saving Gaussians".format(iter))
                 scene.save(iter)
 
-            immature_pc = gaussians.get_immature_para()
             # ------------------------------- densification ------------------------------ #
             if iter < train_args.densify_until_iter and iter > train_args.densify_from_iter and iter % train_args.densification_interval == 0:
-                for f in swin_mgr.frames():
-                    dead_mask = ((immature_pc['opacity'] <= 0.005) & (immature_pc['birth_frame'] == f)).squeeze(-1)
-                    alive_mask = ((immature_pc['opacity'] > 0.005) & (immature_pc['birth_frame'] >= f)).squeeze(-1)
-                    gaussians.relocate_gs_immuture(dead_mask, alive_mask)
+                gaussians.relocate_gs_immuture(swin_mgr)
 
                 if genesis: # only increasing gaussian number for genesis
                     gaussians.add_new_gs(cap_max=args.cap_max)
@@ -213,7 +214,6 @@ def train_slide_window(dataset_args, train_args, pipe_args, args,
                 print("\n[ITER {}] Saving Checkpoint".format(iter))
                 torch.save((gaussians.capture(), iter), scene.model_path + "/chkpnt" + str(iter) + ".pth")
 
-
 def train():
     # ------------------------------- args parsing ------------------------------- #
     parser = ArgumentParser(description="Training script parameters")
@@ -239,6 +239,7 @@ def train():
 
     safe_state(args.quiet)
     torch.autograd.set_detect_anomaly(args.detect_anomaly)
+    tb_writer = prepare_output_and_logger(dataset_args)
 
     # ----------------------------------- init ----------------------------------- #
     gaussians = SwinGaussianModel(dataset_args.sh_degree, max_lifespan=SWIN_SIZE)
@@ -250,7 +251,7 @@ def train():
     # train with all MAX_CAP gs with life [0, N)
     # call then genesis gs
     train_slide_window(dataset_args, train_args, pipe_args, args, 
-                       gaussians, scene, swin_mgr, True)
+                       gaussians, scene, swin_mgr, tb_writer, True)
 
     # --------------------------- decay the genesis gs: -------------------------- #
     # each 1/N's life was reduced to [0, i) i in [1..N]
@@ -268,7 +269,7 @@ def train():
     # ----------------------- start sliding window training ---------------------- #
     while swin_mgr.frame_end <= swin_mgr.max_frame:
         train_slide_window(dataset_args, train_args, pipe_args, args, 
-                           gaussians, scene, swin_mgr)
+                           gaussians, scene, swin_mgr, tb_writer)
         
         if swin_mgr.frame_end < swin_mgr.max_frame:
             swin_mgr.tick()

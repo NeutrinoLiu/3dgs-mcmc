@@ -661,35 +661,47 @@ class GaussianModel:
 
         return num_gs
 
-    def relocate_gs_immuture(self, dead_mask, alive_mask):
+    def relocate_gs_immuture(self, swin_mgr):
         '''
         move dead gaussian to those alives
         '''
-        if dead_mask.sum() == 0 or alive_mask.sum() == 0:
-            return
+        immature_pc = self.get_immature_para(para=["opacity", "birth_frame"])
+        dead_indices_merge = torch.empty(0, device="cuda", dtype=torch.long)
+        reinit_idx_merge = torch.empty(0, device="cuda", dtype=torch.long)
 
-        dead_indices = dead_mask.nonzero(as_tuple=True)[0]
-        alive_indices = alive_mask.nonzero(as_tuple=True)[0]
+        for f in swin_mgr.frames():
+            dead_mask = (immature_pc['opacity'] <= 0.005).squeeze(-1) & (immature_pc['birth_frame'] == f)
+            alive_mask = (immature_pc['opacity'] > 0.005).squeeze(-1) & (immature_pc['birth_frame'] >= f)
+            print(f"[frame {f}] start relocate gaussians: {dead_mask.sum()} dead, {alive_mask.sum()} alive")
 
-        # sample from alive ones based on opacity
-        op = self.get_immature_para(para=["opacity"])["opacity"]
-        probs = (op[alive_indices, 0]) 
-        reinit_idx, ratio = self._sample_alives(alive_indices=alive_indices, probs=probs, num=dead_indices.shape[0])
+            if dead_mask.sum() == 0 or alive_mask.sum() == 0:
+                continue
+
+            dead_indices = dead_mask.nonzero(as_tuple=True)[0]
+            alive_indices = alive_mask.nonzero(as_tuple=True)[0]
+
+            probs = (immature_pc['opacity'][alive_indices, 0]) 
+            reinit_idx, _ = self._sample_alives(alive_indices=alive_indices, probs=probs, num=dead_indices.shape[0])
+
+            dead_indices_merge = torch.cat((dead_indices_merge, dead_indices), dim=0)
+            reinit_idx_merge = torch.cat((reinit_idx_merge, reinit_idx), dim=0)
+
+        ratio = torch.bincount(reinit_idx_merge).unsqueeze(-1)
 
         (
-            self._xyz[dead_indices], 
-            self._features_dc[dead_indices],
-            self._features_rest[dead_indices],
-            self._opacity[dead_indices],
-            self._scaling[dead_indices],
-            self._rotation[dead_indices] 
-        ) = self._update_params(reinit_idx, ratio=ratio)
+            self._xyz[dead_indices_merge], 
+            self._features_dc[dead_indices_merge],
+            self._features_rest[dead_indices_merge],
+            self._opacity[dead_indices_merge],
+            self._scaling[dead_indices_merge],
+            self._rotation[dead_indices_merge] 
+        ) = self._update_params(reinit_idx_merge, ratio=ratio)
         
-        self._opacity[reinit_idx] = self._opacity[dead_indices]
-        self._scaling[reinit_idx] = self._scaling[dead_indices]
+        self._opacity[reinit_idx_merge] = self._opacity[dead_indices_merge]
+        self._scaling[reinit_idx_merge] = self._scaling[dead_indices_merge]
 
-        self.replace_tensors_to_optimizer(inds=reinit_idx)
+        self.replace_tensors_to_optimizer(inds=reinit_idx_merge)
 
-        viable = (self._frame_birth[dead_indices] <= self._frame_birth[reinit_idx]).unsqueeze(-1)
+        viable = (self._frame_birth[dead_indices_merge] <= self._frame_birth[reinit_idx_merge]).unsqueeze(-1)
         assert torch.all(viable), "The gaussians to be relocated should born earlier"
-        self._frame_start[dead_indices] = self._frame_start[reinit_idx]
+        self._frame_start[dead_indices_merge] = self._frame_start[reinit_idx_merge]
