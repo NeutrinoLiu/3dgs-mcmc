@@ -437,13 +437,16 @@ class GaussianModel:
                 assert False, "Unknown parameter {}".format(p)
         return ret
 
+    def derive_idx_of_active(self, frame):
+        immature_frame_idx = indices_of((self._frame_start <= frame) & (self._frame_end > frame))
+        matured_frame_idx = indices_of((self._matured_frame_start <= frame) & (self._matured_frame_end > frame))
+        return immature_frame_idx, matured_frame_idx
     def get_basic_para_at(self, frame, para=["xyz", "feature", "opacity", "scaling", "rotation"]):
         '''
         return a dict of gs paras given a frame
         '''
         ret = {}
-        immature_frame_idx = indices_of((self._frame_start <= frame) & (self._frame_end > frame))
-        matured_frame_idx = indices_of((self._matured_frame_start <= frame) & (self._matured_frame_end > frame))
+        immature_frame_idx, matured_frame_idx = self.derive_idx_of_active(frame)
         for p in set(para):
             if p == "xyz":
                 # TODO: deform the xyz
@@ -661,7 +664,7 @@ class GaussianModel:
 
         return num_gs
 
-    def relocate_gs_immuture(self, swin_mgr):
+    def relocate_gs_immuture(self, swin_mgr, show_info=False):
         '''
         move dead gaussian to those alives
         '''
@@ -672,7 +675,8 @@ class GaussianModel:
         for f in swin_mgr.frames():
             dead_mask = (immature_pc['opacity'] <= 0.005).squeeze(-1) & (immature_pc['birth_frame'] == f)
             alive_mask = (immature_pc['opacity'] > 0.005).squeeze(-1) & (immature_pc['birth_frame'] >= f)
-            print(f"[frame {f}] start relocate gaussians: {dead_mask.sum()} dead, {alive_mask.sum()} alive")
+            if show_info:
+                print(f"[frame {f}] start relocate gaussians: {dead_mask.sum()} dead, {alive_mask.sum()} alive")
 
             if dead_mask.sum() == 0 or alive_mask.sum() == 0:
                 continue

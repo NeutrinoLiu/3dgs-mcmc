@@ -145,7 +145,6 @@ def train_slide_window(dataset_args, train_args, pipe_args, args,
 
         image = render_ret['render']
         active_pc = render_ret['input_gaussians']
-        immature_pc = gaussians.get_immature_para()
         gt_image = viewpoint_cam.original_image.cuda()
 
         # image loss
@@ -161,6 +160,8 @@ def train_slide_window(dataset_args, train_args, pipe_args, args,
         loss.backward()
         iter_end.record()
 
+
+        show_info_flag = lambda iter: (iter == 0 or iter == 5000)
         with torch.no_grad():
             # Progress bar
             ema_loss_for_log = 0.4 * loss.item() + 0.6 * ema_loss_for_log
@@ -181,8 +182,9 @@ def train_slide_window(dataset_args, train_args, pipe_args, args,
                 scene.save(iter)
 
             # ------------------------------- densification ------------------------------ #
+            # TODO, try to change different location for densification
             if iter < train_args.densify_until_iter and iter > train_args.densify_from_iter and iter % train_args.densification_interval == 0:
-                gaussians.relocate_gs_immuture(swin_mgr)
+                gaussians.relocate_gs_immuture(swin_mgr, show_info_flag(iter))
 
                 if genesis: # only increasing gaussian number for genesis
                     gaussians.add_new_gs(cap_max=args.cap_max)
@@ -193,18 +195,23 @@ def train_slide_window(dataset_args, train_args, pipe_args, args,
 
                 # ----------------------------- add perturbation ----------------------------- #
                 # we only perturb immature gaussians
+
                 # TODO we only perturb the active set of immature gaussians, not all of them 
-                L = build_scaling_rotation(immature_pc['scaling'], immature_pc['rotation'])
+                # get immature_mask from render_ret
+                immature_pc = gaussians.get_immature_para()
+                immature_active_idx = gaussians.derive_idx_of_active(viewpoint_cam.frame)[0]
+
+                L = build_scaling_rotation(immature_pc['scaling'][immature_active_idx], immature_pc['rotation'][immature_active_idx])
                 noise_spread = L @ L.transpose(1, 2)
                 def op_sigmoid(x, k=100, x0=0.995):
                     return 1 / (1 + torch.exp(-k * (x - x0)))
-                noise_intensity = torch.randn_like(immature_pc['xyz']) * \
-                        ( op_sigmoid(1 - immature_pc['opacity']) ) * \
+                noise_intensity = torch.randn_like(immature_pc['xyz'][immature_active_idx]) * \
+                        ( op_sigmoid(1 - immature_pc['opacity'][immature_active_idx]) ) * \
                         args.noise_lr * xyz_lr
                 noise_intensity = torch.bmm(noise_spread, noise_intensity.unsqueeze(-1)).squeeze(-1)
 
                 #  _xyz it the para that we want to directly perturb
-                gaussians._xyz.add_(noise_intensity)
+                gaussians._xyz[immature_active_idx].add_(noise_intensity)
 
             # -------------------------------- check point ------------------------------- #
             # training status save
@@ -256,9 +263,7 @@ def train():
     gaussians.decay_genesis() # genesis is not mature yet
 
     swin_mgr.tick() # move the window to [1, N+1)
-    print(f"retiring frame #{swin_mgr.frame_start}")
-    scene.clearTrainCamerasAt(swin_mgr.frame_start) # retire the frame
-    scene.clearTestCamerasAt(swin_mgr.frame_start) # retire the frame
+
 
     # any current immature gaussian whose 
     #   life ends strictly before window_end, or to say
@@ -271,7 +276,9 @@ def train():
     while swin_mgr.frame_end <= swin_mgr.max_frame:
         train_slide_window(dataset_args, train_args, pipe_args, args, 
                            gaussians, scene, swin_mgr, tb_writer)
-        
+        print(f"retiring frame #{swin_mgr.frame_start}")
+        scene.clearTrainCamerasAt(swin_mgr.frame_start) # retire the frame
+        scene.clearTestCamerasAt(swin_mgr.frame_start) # retire the frame
         if swin_mgr.frame_end < swin_mgr.max_frame:
             swin_mgr.tick()
             gaussians.evolve(swin_mgr)
