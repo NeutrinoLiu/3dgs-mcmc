@@ -144,11 +144,8 @@ def train_slide_window(dataset_args, train_args, pipe_args, args,
         render_ret = render(viewpoint_cam, gaussians, pipe_args, bg)
 
         image = render_ret['render']
-        pc = render_ret['input_gaussians']
+        active_pc = render_ret['input_gaussians']
         immature_pc = gaussians.get_immature_para()
-        if swin_mgr.frame_start > 0:
-            print(f"num of immature gaussians: {immature_pc['xyz'].shape[0]}")
-            print(f"num of total gaussians: {pc['xyz'].shape[0]}")
         gt_image = viewpoint_cam.original_image.cuda()
 
         # image loss
@@ -156,8 +153,8 @@ def train_slide_window(dataset_args, train_args, pipe_args, args,
         Lssim = ssim(image, gt_image)
         loss = (1.0 - train_args.lambda_dssim) * Ll1 + train_args.lambda_dssim * (1.0 - Lssim)
         # mcmc regularization
-        loss += args.opacity_reg * torch.abs(pc['opacity']).mean()
-        loss += args.scale_reg * torch.abs(pc['scaling']).mean()
+        loss += args.opacity_reg * torch.abs(active_pc['opacity']).mean()
+        loss += args.scale_reg * torch.abs(active_pc['scaling']).mean()
         # arap regularization
         # TODO: add arap regularization
 
@@ -196,6 +193,7 @@ def train_slide_window(dataset_args, train_args, pipe_args, args,
 
                 # ----------------------------- add perturbation ----------------------------- #
                 # we only perturb immature gaussians
+                # TODO we only perturb the active set of immature gaussians, not all of them 
                 L = build_scaling_rotation(immature_pc['scaling'], immature_pc['rotation'])
                 noise_spread = L @ L.transpose(1, 2)
                 def op_sigmoid(x, k=100, x0=0.995):
@@ -225,7 +223,7 @@ def train():
     parser.add_argument('--debug_from', type=int, default=-1)
     parser.add_argument('--detect_anomaly', action='store_true', default=False)
     parser.add_argument("--test_iterations", nargs="+", type=int, default=list(range(1_000, 30_000, 1_000)))
-    parser.add_argument("--save_iterations", nargs="+", type=int, default=list(range(5_000, 30_000, 5_000)))
+    parser.add_argument("--save_iterations", nargs="+", type=int, default=list(range(1_000, 30_000, 5_000)))
     parser.add_argument("--quiet", action="store_true")
     parser.add_argument("--checkpoint_iterations", nargs="+", type=int, default=[])
     parser.add_argument("--start_checkpoint", type=str, default = None)
@@ -258,6 +256,9 @@ def train():
     gaussians.decay_genesis() # genesis is not mature yet
 
     swin_mgr.tick() # move the window to [1, N+1)
+    print(f"retiring frame #{swin_mgr.frame_start}")
+    scene.clearTrainCamerasAt(swin_mgr.frame_start) # retire the frame
+    scene.clearTestCamerasAt(swin_mgr.frame_start) # retire the frame
 
     # any current immature gaussian whose 
     #   life ends strictly before window_end, or to say

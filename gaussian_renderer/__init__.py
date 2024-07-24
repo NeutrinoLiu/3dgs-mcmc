@@ -130,17 +130,18 @@ def deformable_render(viewpoint_camera, pc : GaussianModel, pipe, bg_color : tor
     )
 
     rasterizer = GaussianRasterizer(raster_settings=raster_settings)
+    frame = viewpoint_camera.frame
+    paras = pc.get_basic_para_at(frame)
 
     # Create zero tensor. We will use it to make pytorch return gradients of the 2D (screen-space) means
-    screenspace_points = torch.zeros_like(pc.get_xyz, dtype=pc.get_xyz.dtype, requires_grad=True, device="cuda") + 0
+    screenspace_points = torch.zeros_like(paras['xyz'], dtype=paras['xyz'].dtype, requires_grad=True, device="cuda") + 0
     try:
         screenspace_points.retain_grad()
     except:
         pass
 
-    frame = torch.tensor(viewpoint_camera.frame)
     means2D = screenspace_points
-    paras = pc.get_basic_para_at(frame)
+
 
     means3D = paras['xyz']
     shs = paras['feature']
