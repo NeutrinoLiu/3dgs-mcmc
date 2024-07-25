@@ -12,7 +12,8 @@
 import torch
 import math
 from diff_gaussian_rasterization import GaussianRasterizationSettings, GaussianRasterizer
-from scene.gaussian_model import GaussianModel
+from scene.gaussian_model_static import GaussianModel
+from scene.gaussian_model import SwinGaussianModel
 from utils.sh_utils import eval_sh
 
 def render(viewpoint_camera, pc : GaussianModel, pipe, bg_color : torch.Tensor, scaling_modifier = 1.0, override_color = None):
@@ -101,7 +102,7 @@ def render(viewpoint_camera, pc : GaussianModel, pipe, bg_color : torch.Tensor, 
             "is_used": is_used}
 
 
-def deformable_render(viewpoint_camera, pc : GaussianModel, pipe, bg_color : torch.Tensor, scaling_modifier = 1.0, override_color = None,
+def deformable_render(viewpoint_camera, pc : SwinGaussianModel, pipe, bg_color : torch.Tensor, scaling_modifier = 1.0, override_color = None,
                       swin_mgr=None):
     """
     Render the scene. 

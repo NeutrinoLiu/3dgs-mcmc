@@ -16,7 +16,7 @@ from utils.image_utils import psnr
 
 
 from scene import DynamicScene
-from scene import GaussianModel as SwinGaussianModel
+from scene import SwinGaussianModel
 from gaussian_renderer import deformable_render as render
 from scene.gaussian_model import build_scaling_rotation
 
@@ -29,7 +29,7 @@ except ImportError:
     TENSORBOARD_FOUND = False
 
 # CONSTS
-SWIN_SIZE = 4 # actual is the max size 4090 could load the dataset
+SWIN_SIZE = 1 # actual is the max size 4090 could load the dataset
 
 def prepare_output_and_logger(args):    
     if not args.model_path:
@@ -54,7 +54,7 @@ def prepare_output_and_logger(args):
     return tb_writer
 
 def training_report(tb_writer, iteration, Ll1, loss, l1_loss, elapsed, testing_iterations, scene: DynamicScene, renderFunc, renderArgs, args,
-                    swin_mgr):
+                    swin_mgr: SliWinManager):
     if tb_writer:
         tb_writer.add_scalar('train_loss_patches/l1_loss', Ll1.item(), iteration)
         tb_writer.add_scalar('train_loss_patches/total_loss', loss.item(), iteration)
@@ -87,6 +87,11 @@ def training_report(tb_writer, iteration, Ll1, loss, l1_loss, elapsed, testing_i
                 psnr_test /= len(config['cameras'])
                 l1_test /= len(config['cameras'])          
                 print("\n[ITER {}] Evaluating {}: L1 {} PSNR {}".format(iteration, config['name'], l1_test, psnr_test))
+                
+                # ---------------------------- manual dump result ---------------------------- #
+                with open("result.txt", "a") as f:
+                    f.write("\n[ITER {} FRAME {}] Evaluating {}: L1 {} PSNR {}".format(iteration, swin_mgr.frame_start, config['name'], l1_test, psnr_test))
+                
                 if tb_writer:
                     tb_writer.add_scalar(config['name'] + '/loss_viewpoint - l1_loss', l1_test, iteration)
                     tb_writer.add_scalar(config['name'] + '/loss_viewpoint - psnr', psnr_test, iteration)
@@ -161,7 +166,8 @@ def train_slide_window(dataset_args, train_args, pipe_args, args,
         iter_end.record()
 
 
-        show_info_flag = lambda iter: (iter == 0 or iter == 5000)
+        show_info_flag = lambda iter: (iter == train_args.densify_from_iter + train_args.densification_interval \
+                                       or iter > total_iterations - train_args.densification_interval)
         with torch.no_grad():
             # Progress bar
             ema_loss_for_log = 0.4 * loss.item() + 0.6 * ema_loss_for_log
@@ -196,7 +202,7 @@ def train_slide_window(dataset_args, train_args, pipe_args, args,
                 # ----------------------------- add perturbation ----------------------------- #
                 # we only perturb immature gaussians
 
-                # TODO we only perturb the active set of immature gaussians, not all of them 
+                # we only perturb the active set of immature gaussians, not all of them 
                 # get immature_mask from render_ret
                 immature_pc = gaussians.get_immature_para()
                 immature_active_idx = gaussians.derive_idx_of_active(viewpoint_cam.frame)[0]
@@ -230,7 +236,7 @@ def train():
     parser.add_argument('--debug_from', type=int, default=-1)
     parser.add_argument('--detect_anomaly', action='store_true', default=False)
     parser.add_argument("--test_iterations", nargs="+", type=int, default=list(range(1_000, 30_000, 1_000)))
-    parser.add_argument("--save_iterations", nargs="+", type=int, default=list(range(1_000, 30_000, 5_000)))
+    parser.add_argument("--save_iterations", nargs="+", type=int, default=list(range(25_000, 30_000, 5_000)))
     parser.add_argument("--quiet", action="store_true")
     parser.add_argument("--checkpoint_iterations", nargs="+", type=int, default=[])
     parser.add_argument("--start_checkpoint", type=str, default = None)
@@ -279,8 +285,9 @@ def train():
         print(f"retiring frame #{swin_mgr.frame_start}")
         scene.clearTrainCamerasAt(swin_mgr.frame_start) # retire the frame
         scene.clearTestCamerasAt(swin_mgr.frame_start) # retire the frame
+        
+        swin_mgr.tick()
         if swin_mgr.frame_end < swin_mgr.max_frame:
-            swin_mgr.tick()
             gaussians.evolve(swin_mgr)
 
 if __name__ == "__main__":

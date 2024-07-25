@@ -14,7 +14,8 @@ import random
 import json
 from utils.system_utils import searchForMaxIteration
 from scene.dataset_readers import sceneLoadTypeCallbacks
-from scene.gaussian_model import GaussianModel
+from scene.gaussian_model import SwinGaussianModel
+from scene.gaussian_model_static import GaussianModel
 from arguments import ModelParams
 from utils.camera_utils import cameraList_from_camInfos, camera_to_JSON, cameraList_from_camInfos_lazy
 
@@ -155,13 +156,14 @@ class DynamicScene:
         self.cameras_extent = scene_info.nerf_normalization["radius"]
 
         # --------------- load cams in scene_info to actual cam objects -------------- #
+        print(f"PRE-loading Cameras for {self.max_frame} frames ...")
         for t in range(self.max_frame):
             for resolution_scale in resolution_scales:
                 train_cams = {}
-                print(f"PRE-loading Train Cameras @ frame {t}")
+                # print(f"PRE-loading Train Cameras @ frame {t}")
                 train_cams[resolution_scale] = cameraList_from_camInfos_lazy(scene_info.train_cam_at[t], resolution_scale, args)
                 test_cams = {}
-                print(f"PRE-loading Test Cameras  @ frame {t}")
+                # print(f"PRE-loading Test Cameras  @ frame {t}")
                 test_cams[resolution_scale] = cameraList_from_camInfos_lazy(scene_info.test_cam_at[t], resolution_scale, args)
             self.train_cam_at.append(train_cams)
             self.test_cam_at.append(test_cams)

@@ -9,3 +9,6 @@ screenshots
 0_log_*
 test_*
 *.log
+a06*
+cameras.json
+input.ply

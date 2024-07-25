@@ -33,7 +33,7 @@ def indices_of(tensor):
     '''
     return torch.nonzero(tensor.squeeze(-1) , as_tuple=True)[0]
 
-class GaussianModel:
+class SwinGaussianModel:
 
     def setup_functions(self):
         '''
@@ -677,6 +677,10 @@ class GaussianModel:
             alive_mask = (immature_pc['opacity'] > 0.005).squeeze(-1) & (immature_pc['birth_frame'] >= f)
             if show_info:
                 print(f"[frame {f}] start relocate gaussians: {dead_mask.sum()} dead, {alive_mask.sum()} alive")
+
+                # manually log the relocation process
+                with open("result.txt", "a") as file:
+                    file.write(f"\n[frame {f}] start relocate gaussians: {dead_mask.sum()} dead, {alive_mask.sum()} alive")
 
             if dead_mask.sum() == 0 or alive_mask.sum() == 0:
                 continue
