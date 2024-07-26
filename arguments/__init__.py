@@ -54,7 +54,7 @@ class ModelParams(ParamGroup):
         self._white_background = False
         self.data_device = "cuda"
         self.eval = True
-        self.cap_max = -1
+        self.cap_max = 100000
         self.init_type = "random"
         super().__init__(parser, "Loading Parameters", sentinel)
 
@@ -91,9 +91,11 @@ class OptimizationParams(ParamGroup):
         self.densify_until_iter = 25_000
         self.densify_grad_threshold = 0.0002
         self.random_background = False
-        self.noise_lr = 5e5
-        self.scale_reg = 0.01
-        self.opacity_reg = 0.01
+
+        self.noise_lr = 5e4
+        self.scale_reg = 1e-4
+        self.opacity_reg = 1e-4
+        
         super().__init__(parser, "Optimization Parameters")
 
 def get_combined_args(parser : ArgumentParser):

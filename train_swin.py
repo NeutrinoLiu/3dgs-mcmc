@@ -29,7 +29,6 @@ except ImportError:
     TENSORBOARD_FOUND = False
 
 # CONSTS
-SWIN_SIZE = 1 # actual is the max size 4090 could load the dataset
 
 def prepare_output_and_logger(args):    
     if not args.model_path:
@@ -68,10 +67,12 @@ def training_report(tb_writer, iteration, Ll1, loss, l1_loss, elapsed, testing_i
         validation_configs = ({'name': 'test', 'cameras' : test_cams}, 
                               {'name': 'train', 'cameras' : [train_cams[idx % len(train_cams)] for idx in range(5, 30, 5)]})
 
+        grouping = lambda x: x.split('/')[0]
         for config in validation_configs:
             if config['cameras'] and len(config['cameras']) > 0:
                 l1_test = 0.0
                 psnr_test = 0.0
+                psnr_test_per_frame = {}
                 for idx, viewpoint in enumerate(config['cameras']):
                     # no need to append swin_mgr to render when test time, it can just render by current frame info
                     image = torch.clamp(
@@ -84,13 +85,15 @@ def training_report(tb_writer, iteration, Ll1, loss, l1_loss, elapsed, testing_i
                             tb_writer.add_images(config['name'] + "_view_{}/ground_truth".format(viewpoint.image_name), gt_image[None], global_step=iteration)
                     l1_test += l1_loss(image, gt_image).mean().double()
                     psnr_test += psnr(image, gt_image).mean().double()
+                    psnr_test_per_frame.setdefault(grouping(viewpoint.image_name), []).append(psnr(image, gt_image).mean().double())
                 psnr_test /= len(config['cameras'])
                 l1_test /= len(config['cameras'])          
                 print("\n[ITER {}] Evaluating {}: L1 {} PSNR {}".format(iteration, config['name'], l1_test, psnr_test))
                 
                 # ---------------------------- manual dump result ---------------------------- #
                 with open("result.txt", "a") as f:
-                    f.write("\n[ITER {} FRAME {}] Evaluating {}: L1 {} PSNR {}".format(iteration, swin_mgr.frame_start, config['name'], l1_test, psnr_test))
+                    for idx, psnr_list in psnr_test_per_frame.items():
+                        f.write("\n[ITER {} FRAME {}] eval {} PSNR {}".format(iteration, idx, config['name'], sum(psnr_list)/len(psnr_list)))
                 
                 if tb_writer:
                     tb_writer.add_scalar(config['name'] + '/loss_viewpoint - l1_loss', l1_test, iteration)
@@ -240,6 +243,9 @@ def train():
     parser.add_argument("--quiet", action="store_true")
     parser.add_argument("--checkpoint_iterations", nargs="+", type=int, default=[])
     parser.add_argument("--start_checkpoint", type=str, default = None)
+
+    parser.add_argument("--swin_size", type=int, default=5)
+    
     args = parser.parse_args(sys.argv[1:])
     args.save_iterations.append(args.iterations)
     print("Optimizing " + args.model_path)
@@ -253,9 +259,9 @@ def train():
     tb_writer = prepare_output_and_logger(dataset_args)
 
     # ----------------------------------- init ----------------------------------- #
-    gaussians = SwinGaussianModel(dataset_args.sh_degree, max_lifespan=SWIN_SIZE)
+    gaussians = SwinGaussianModel(dataset_args.sh_degree, max_lifespan=args.swin_size)
     scene = DynamicScene(dataset_args, gaussians)
-    swin_mgr = SliWinManager(SWIN_SIZE, scene.max_frame)
+    swin_mgr = SliWinManager(args.swin_size, scene.max_frame)
 
     # ---------------------------------- bootup ---------------------------------- #
     # swin_mgr as [0, N)
