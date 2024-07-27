@@ -72,7 +72,7 @@ def training(dataset, opt, pipe, args):
 
         # Pick a random Camera with in window [start, end]
         if not viewpoint_stack:
-            scene.clearAllTrain()
+            scene.clearAll()
             viewpoint_stack = swin_mgr.fetch_cams(scene.getTrainCamerasAt)
             viewpoint_cam = viewpoint_stack.pop(randint(0, len(viewpoint_stack)-1))
         else:

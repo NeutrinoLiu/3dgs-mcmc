@@ -10,5 +10,4 @@ screenshots
 test_*
 *.log
 a06*
-cameras.json
-input.ply
+result.txt

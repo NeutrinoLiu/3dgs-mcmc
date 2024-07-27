@@ -25,7 +25,7 @@ from simple_knn._C import distCUDA2
 from utils.graphics_utils import BasicPointCloud
 from utils.general_utils import strip_symmetric, build_scaling_rotation
 from utils.reloc_utils import compute_relocation_cuda
-from utils.tempo_utils import deform
+
 
 class GaussianModel:
 

@@ -100,6 +100,8 @@ class Scene:
 class DynamicScene:
 
     gaussians : GaussianModel
+    MAX_FRAME_IN_MEMORY = 10
+    MAX_TEST_FRAME_IN_MEMORY = 40
 
     def __init__(self, args : ModelParams, gaussians : GaussianModel, load_iteration=None, shuffle=True, resolution_scales=[1.0]):
         """b
@@ -108,7 +110,8 @@ class DynamicScene:
         self.model_path = args.model_path
         self.loaded_iter = None
         self.gaussians = gaussians
-        self.activated_frame_scale = set()
+        self.activated_train_frame_scale = set()
+        self.activated_test_frame_scale = set()
 
         if load_iteration:
             if load_iteration == -1:
@@ -181,61 +184,94 @@ class DynamicScene:
         point_cloud_path = os.path.join(self.model_path, "point_cloud/iteration_{}".format(iteration))
         self.gaussians.save_ply(os.path.join(point_cloud_path, "point_cloud.ply"))
 
+    # single cam fetch
     def getTrainCamerasAt(self, t, scale=1.0):
-        assert t >=0 and t < len(self.train_cam_at), f"invalid time frame {t}"
-        return self.activate(t, scale, test=False)
-
+        return self.batchGetTrainCam([t], scale)[t]
     def getTestCamerasAt(self, t, scale=1.0):
-        assert t >=0 and t < len(self.test_cam_at), f"invalid time frame {t}"
-        return self.activate(t, scale, test=True)
+        return self.batchGetTestCam([t], scale)[t]
 
-    def clearAllTrain(self, tolerance=10):
-        activated = list(filter(lambda x: not x[-1], # all train frames
-                           self.activated_frame_scale))
-        if len(activated) <= tolerance: return
-        for fands in activated:
-            frame, scale, test = fands
-            self.deactivate(frame, scale, test)
-            
-    def clearAllTest(self, tolerance=20):
-        activated = list(filter(lambda x: x[-1], # all test frames
-                           self.activated_frame_scale))
-        if len(activated) <= tolerance: return
-        for fands in activated:
-            frame, scale, test = fands
-            self.deactivate(frame, scale, test)
-            
-    def clearTrainCamerasAt(self, t, scale=1.0):
-        assert t >=0 and t < len(self.train_cam_at), f"invalid time frame {t}"
-        return self.deactivate(t, scale, test=False)
+    # batch cam fetch
+    def batchGetTrainCam(self, t_list, scale=1.0):
+        return self.batch_activate_train(t_list, scale)
+    def batchGetTestCam(self, t_list, scale=1.0):
+        return self.batch_activate_test(t_list, scale)
 
-    def clearTestCamerasAt(self, t, scale=1.0):
-        assert t >=0 and t < len(self.test_cam_at), f"invalid time frame {t}"
-        return self.deactivate(t, scale, test=True)
+    def batch_activate_train(self, t_list, scale=1.0):
+        if len(t_list) > self.MAX_FRAME_IN_MEMORY:
+            assert False, f"too many frames to activate, {len(t_list)} > {self.MAX_FRAME_IN_MEMORY}"
+        # deactive all frames that are not in t_list
+        ts_list = set([(t, scale) for t in t_list])
+        cur_list = set(self.activated_train_frame_scale)
+        deactive = cur_list - ts_list
+        for t, s in deactive:
+            self._deactivate(t, s, test=False)
+        ret = []
+        for t, s in ts_list:
+            ret += self._activate(t, s, test=False)
+        return ret
+    def batch_activate_test(self, t_list, scale=1.0):
+        if len(t_list) > self.MAX_TEST_FRAME_IN_MEMORY:
+            assert False, f"too many frames to activate, {len(t_list)} > {self.MAX_TEST_FRAME_IN_MEMORY}"
+        # deactive all frames that are not in t_list
+        ts_list = set([(t, scale) for t in t_list])
+        cur_list = set(self.activated_test_frame_scale)
+        deactive = cur_list - ts_list
+        for t, s in deactive:
+            self._deactivate(t, s, test=True)
+        ret = []
+        for t, s in ts_list:
+            ret += self._activate(t, s, test=True)
+        return ret
 
+    # unload all frames
+    def unloadAllFrames(self):
+        for fands in self.activated_train_frame_scale.copy():
+            frame, scale = fands
+            self._deactivate(frame, scale, test=False)
+        for fands in self.activated_test_frame_scale.copy():
+            frame, scale = fands
+            self._deactivate(frame, scale, test=True)
 
-    def activate(self, t, scale, test):
-        cams = self.test_cam_at if test else self.train_cam_at
-        hash = (t, scale, test)
-        if hash in self.activated_frame_scale:
-            return cams[t][scale]
+    def _activate(self, t, scale, test):
+        if test:
+            cam_register = self.activated_test_frame_scale
+            cam_list = self.test_cam_at
+            tag = "Test"
+        else:
+            cam_register = self.activated_train_frame_scale
+            cam_list = self.train_cam_at
+            tag = "Train"
+        assert t >=0 and t < len(cam_list), f"invalid time frame {t}"
+
+        hash = (t, scale)
+        if hash in cam_register:
+            return cam_list[t][scale]
         
-        for c in cams[t][scale]:
+        for c in cam_list[t][scale]:
             c.load()
+        print(f" + Activate {tag} cameras @ frame {t}, scale {scale}")
+        cam_register.add(hash)
 
-        print(f" + Activate {'test' if test else 'train' } cameras @ frame {t}, scale {scale}")
-        self.activated_frame_scale.add(hash)
-        return cams[t][scale]
+        return cam_list[t][scale]
 
-    def deactivate(self, t, scale, test):
-        cams = self.test_cam_at if test else self.train_cam_at
-        hash = (t, scale, test)
-        if hash not in self.activated_frame_scale:
-            print(f" - Deactivating an inactive {'test' if test else 'train' } cameras @ frame {t}, scale {scale}")
+    def _deactivate(self, t, scale, test):
+        if test:
+            cam_register = self.activated_test_frame_scale
+            cam_list = self.test_cam_at
+            tag = "Test"
+        else:
+            cam_register = self.activated_train_frame_scale
+            cam_list = self.train_cam_at
+            tag = "Train"
+        assert t >=0 and t < len(cam_list), f"invalid time frame {t}"
+
+        hash = (t, scale)
+        if hash not in cam_register:
+            print(f" - Deactivating an inactive {tag} cameras @ frame {t}, scale {scale}")
             return
-
-        for c in cams[t][scale]:
+    
+        for c in cam_list[t][scale]:
             c.unload()
-        self.activated_frame_scale.remove(hash)
-        print(f" - Deactivate {'test' if test else 'train' } cameras @ frame {t}, scale {scale}")
+        cam_register.remove(hash)
+        print(f" - Deactivate {tag} cameras @ frame {t}, scale {scale}")
 

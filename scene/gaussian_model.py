@@ -25,7 +25,6 @@ from simple_knn._C import distCUDA2
 from utils.graphics_utils import BasicPointCloud
 from utils.general_utils import strip_symmetric, build_scaling_rotation
 from utils.reloc_utils import compute_relocation_cuda
-from utils.tempo_utils import deform
 
 def indices_of(tensor):
     '''
@@ -672,7 +671,7 @@ class SwinGaussianModel:
         dead_indices_merge = torch.empty(0, device="cuda", dtype=torch.long)
         reinit_idx_merge = torch.empty(0, device="cuda", dtype=torch.long)
 
-        for f in swin_mgr.frames():
+        for f in swin_mgr.all_frames():
             dead_mask = (immature_pc['opacity'] <= 0.005).squeeze(-1) & (immature_pc['birth_frame'] == f)
             alive_mask = (immature_pc['opacity'] > 0.005).squeeze(-1) & (immature_pc['birth_frame'] >= f)
             if show_info:

@@ -4,6 +4,7 @@
 import torch
 import os
 import uuid
+import random
 import sys
 from random import randint
 from tqdm import tqdm
@@ -62,10 +63,11 @@ def training_report(tb_writer, iteration, Ll1, loss, l1_loss, elapsed, testing_i
     # Report test and samples of training set
     if iteration in testing_iterations:
         torch.cuda.empty_cache()
-        test_cams = swin_mgr.fetch_cams(scene.getTestCamerasAt)
-        train_cams = swin_mgr.fetch_cams(scene.getTrainCamerasAt)
+        test_cams = scene.batchGetTestCam(swin_mgr.all_frames())
+        # train_cams = scene.batchGetTrainCamAt(swin_mgr.sampled_frames())
         validation_configs = ({'name': 'test', 'cameras' : test_cams}, 
-                              {'name': 'train', 'cameras' : [train_cams[idx % len(train_cams)] for idx in range(5, 30, 5)]})
+                            #   {'name': 'train', 'cameras' : [train_cams[idx % len(train_cams)] for idx in range(5, 30, 5)]}
+                              )
 
         grouping = lambda x: x.split('/')[0]
         for config in validation_configs:
@@ -122,8 +124,7 @@ def train_slide_window(dataset_args, train_args, pipe_args, args,
     # training set setup
     # free up gpu memory 
     viewpoint_stack = None
-    scene.clearAllTrain()
-    scene.clearAllTest()
+    scene.unloadAllFrames()
     
     ema_loss_for_log = 0.0
     total_iterations = train_args.iterations if not genesis else train_args.genesis_iterations
@@ -131,6 +132,7 @@ def train_slide_window(dataset_args, train_args, pipe_args, args,
     first_iter += 1
 
     gaussians.training_setup(train_args)
+
 
     for iter in range(first_iter, total_iterations):
 
@@ -144,11 +146,13 @@ def train_slide_window(dataset_args, train_args, pipe_args, args,
 
         # ------------------------------ normal training ----------------------------- #
         if not viewpoint_stack:
-            viewpoint_stack = swin_mgr.fetch_cams(scene.getTrainCamerasAt)
+            viewpoint_stack = scene.batchGetTrainCam(
+                swin_mgr.sampled_frames(resample=True)).copy()
+            random.shuffle(viewpoint_stack)
             viewpoint_cam = viewpoint_stack.pop(randint(0, len(viewpoint_stack)-1))
         else:
             viewpoint_cam = viewpoint_stack.pop(randint(0, len(viewpoint_stack)-1))
-
+        # breakpoint()
         render_ret = render(viewpoint_cam, gaussians, pipe_args, bg)
 
         image = render_ret['render']
@@ -168,9 +172,6 @@ def train_slide_window(dataset_args, train_args, pipe_args, args,
         loss.backward()
         iter_end.record()
 
-
-        show_info_flag = lambda iter: (iter == train_args.densify_from_iter + train_args.densification_interval \
-                                       or iter > total_iterations - train_args.densification_interval)
         with torch.no_grad():
             # Progress bar
             ema_loss_for_log = 0.4 * loss.item() + 0.6 * ema_loss_for_log
@@ -193,7 +194,7 @@ def train_slide_window(dataset_args, train_args, pipe_args, args,
             # ------------------------------- densification ------------------------------ #
             # TODO, try to change different location for densification
             if iter < train_args.densify_until_iter and iter > train_args.densify_from_iter and iter % train_args.densification_interval == 0:
-                gaussians.relocate_gs_immuture(swin_mgr, show_info_flag(iter))
+                gaussians.relocate_gs_immuture(swin_mgr, True)
 
                 if genesis: # only increasing gaussian number for genesis
                     gaussians.add_new_gs(cap_max=args.cap_max)
@@ -276,30 +277,26 @@ def train():
 
     swin_mgr.tick() # move the window to [1, N+1)
 
-
-    # any current immature gaussian whose 
-    #   life ends strictly before window_end, or to say
-    #   can not fulfill the whole window range, will:
-    # 1. reproduce a new gaussian
-    # 2. get matured and moved to matured list
-    gaussians.evolve(swin_mgr) 
-
     # ----------------------- start sliding window training ---------------------- #
-    while swin_mgr.frame_end <= swin_mgr.max_frame:
+    while swin_mgr.frame_start < swin_mgr.max_frame:
+        # any current immature gaussian whose 
+        #   life ends strictly before window_end, or to say
+        #   can not fulfill the whole window range, will:
+        # 1. reproduce a new gaussian
+        # 2. get matured and moved to matured list
+        gaussians.evolve(swin_mgr) 
+
         train_slide_window(dataset_args, train_args, pipe_args, args, 
                            gaussians, scene, swin_mgr, tb_writer)
+
         print(f"retiring frame #{swin_mgr.frame_start}")
-        scene.clearTrainCamerasAt(swin_mgr.frame_start) # retire the frame
-        scene.clearTestCamerasAt(swin_mgr.frame_start) # retire the frame
-        
         swin_mgr.tick()
-        if swin_mgr.frame_end < swin_mgr.max_frame:
-            gaussians.evolve(swin_mgr)
 
 if __name__ == "__main__":
     # current version
     # ignore gaussian load/unload
     # i.e. all guassian still stays in GDDR
     # ignore check point
+    random.seed(314159)
     train()
     
