@@ -9,19 +9,18 @@ class SliWinManager:
     def tick(self):
         self.frame_start += 1
         self.frame_end += 1
-        self.frame_end = min(self.frame_end, self.max_frame)
     def fetch_cams(self, fetcher):
         return fetcher(self.sampled_frames()).copy()
     def sampled_frames(self, resample=False):
         if resample or (self._sampled_frames is None):
-            self._sampled_frames = range(self.frame_start, self.frame_end)
+            self._sampled_frames = self.all_frames()
             if len(self._sampled_frames) > DynamicScene.MAX_FRAME_IN_MEMORY:
                 self._sampled_frames = sorted(random.sample(self._sampled_frames, DynamicScene.MAX_FRAME_IN_MEMORY))
                 print(f"Warning: too many frames in window, resample {DynamicScene.MAX_FRAME_IN_MEMORY} from #{self.frame_start} to #{self.frame_end}")
                 print(f"Sampled frames: {self._sampled_frames}")
         return self._sampled_frames
     def all_frames(self):
-        return range(self.frame_start, self.frame_end)
+        return range(self.frame_start, min(self.frame_end, self.max_frame))
 
 def deform(gs, frame):
     return gs

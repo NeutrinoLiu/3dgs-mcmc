@@ -54,7 +54,9 @@ class SwinGaussianModel:
 
         self.rotation_activation = torch.nn.functional.normalize
 
-    def __init__(self, sh_degree : int, max_lifespan : int):
+    def __init__(self, sh_degree : int,
+                 max_lifespan : int,
+                 matured_buffer_size : int):
         '''
         attributes
         '''
@@ -66,7 +68,10 @@ class SwinGaussianModel:
         self.optimizer = None
         self.percent_dense = 0
         self.spatial_lr_scale = 0
+
         self.max_lifespan = max_lifespan
+        self.buffer_size = matured_buffer_size
+        self.matured_ctr = 0
 
         self.setup_functions()
 
@@ -355,25 +360,49 @@ class SwinGaussianModel:
             group_indices = indices[start_idx : start_idx + per_group_size]
             self._frame_end[group_indices] -= i
 
+    @property
+    def matured_paras(self):
+        return {
+            "xyz": self._matured_xyz,
+            "f_dc": self._matured_features_dc,
+            "f_rest": self._matured_features_rest,
+            "opacity": self._matured_opacity,
+            "scaling": self._matured_scaling,
+            "rotation": self._matured_rotation,
+            "start_frame": self._matured_frame_start,
+            "end_frame": self._matured_frame_end,
+            "birth_frame": self._matured_frame_birth
+        }
+
+    def _increasingly_dump(self, paras, path):
+        pass
     def _mature(self, mature_idx):
         '''
         move gaussians from immatured to matured
         '''
-        len_before = self._matured_xyz.shape[0]
+        num_of_maturing = len(mature_idx)
 
+        # cat always create a new tensor, so no clone needed before detach()
         self._matured_xyz = torch.cat((self._matured_xyz, self._xyz[mature_idx]), dim=0).detach()
         self._matured_features_dc = torch.cat((self._matured_features_dc, self._features_dc[mature_idx]), dim=0).detach()
         self._matured_features_rest = torch.cat((self._matured_features_rest, self._features_rest[mature_idx]), dim=0).detach()
         self._matured_scaling = torch.cat((self._matured_scaling, self._scaling[mature_idx]), dim=0).detach()
         self._matured_rotation = torch.cat((self._matured_rotation, self._rotation[mature_idx]), dim=0).detach()
         self._matured_opacity = torch.cat((self._matured_opacity, self._opacity[mature_idx]), dim=0).detach()
-
+        # breakpoint()
         self._matured_frame_birth = torch.cat((self._matured_frame_birth, self._frame_birth[mature_idx]), dim=0).detach()
         self._matured_frame_start = torch.cat((self._matured_frame_start, self._frame_start[mature_idx]), dim=0).detach()
         self._matured_frame_end = torch.cat((self._matured_frame_end, self._frame_end[mature_idx]), dim=0).detach()
 
-        len_after = self._matured_xyz.shape[0]
-        print("Matured {} gaussians, total {} now".format(len_after - len_before, len_after))
+        # the buffer only keeps the latest buffer_size gaussians
+        dump_para = {}
+        for pname, para in self.matured_paras.items():
+            dump_para[pname] = para[-num_of_maturing:].clone()
+            para = para[-self.buffer_size:]
+        self._increasingly_dump(dump_para, "streamable.ply")
+
+        self.matured_ctr += num_of_maturing
+        print("Matured {} gaussians, total {} now".format(num_of_maturing, self.matured_ctr))
 
     def _rollover(self, mature_idx, elapse):
 
@@ -408,6 +437,12 @@ class SwinGaussianModel:
 
         self._mature(mature_idx)
         self._rollover(mature_idx, self.max_lifespan)
+    
+    def mature_last_frame(self, last_frame):
+        '''
+        mature all gaussians that are in the last frame
+        '''
+        self._mature(indices_of(self._frame_start == last_frame))
 
     def get_immature_para(self, para=["xyz", "feature", "opacity", "scaling", "rotation",
                                       "start_frame", "end_frame", "birth_frame"]):

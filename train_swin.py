@@ -124,7 +124,8 @@ def train_slide_window(dataset_args, train_args, pipe_args, args,
     # training set setup
     # free up gpu memory 
     viewpoint_stack = None
-    scene.unloadAllFrames()
+    # not necessary, as long as you use batchGet, which is safe
+    # scene.unloadAllFrames()
     
     ema_loss_for_log = 0.0
     total_iterations = train_args.iterations if not genesis else train_args.genesis_iterations
@@ -194,7 +195,7 @@ def train_slide_window(dataset_args, train_args, pipe_args, args,
             # ------------------------------- densification ------------------------------ #
             # TODO, try to change different location for densification
             if iter < train_args.densify_until_iter and iter > train_args.densify_from_iter and iter % train_args.densification_interval == 0:
-                gaussians.relocate_gs_immuture(swin_mgr, True)
+                gaussians.relocate_gs_immuture(swin_mgr, iter % (train_args.densification_interval * 10)== 0)
 
                 if genesis: # only increasing gaussian number for genesis
                     gaussians.add_new_gs(cap_max=args.cap_max)
@@ -260,7 +261,9 @@ def train():
     tb_writer = prepare_output_and_logger(dataset_args)
 
     # ----------------------------------- init ----------------------------------- #
-    gaussians = SwinGaussianModel(dataset_args.sh_degree, max_lifespan=args.swin_size)
+    gaussians = SwinGaussianModel(dataset_args.sh_degree,
+                                  max_lifespan=args.swin_size,
+                                  matured_buffer_size=args.cap_max)
     scene = DynamicScene(dataset_args, gaussians)
     swin_mgr = SliWinManager(args.swin_size, scene.max_frame)
 
@@ -292,7 +295,12 @@ def train():
         print(f"retiring frame #{swin_mgr.frame_start}")
         swin_mgr.tick()
 
+    # there are some immature gaussians in the last frame
+    # mature them
+    gaussians.mature_last_frame(swin_mgr.max_frame-1)
+
 if __name__ == "__main__":
+    # breakpoint()
     # current version
     # ignore gaussian load/unload
     # i.e. all guassian still stays in GDDR
