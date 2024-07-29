@@ -69,10 +69,6 @@ class SwinGaussianModel:
         self.percent_dense = 0
         self.spatial_lr_scale = 0
 
-        self.max_lifespan = max_lifespan
-        self.buffer_size = matured_buffer_size
-        self.matured_ctr = 0
-
         self.setup_functions()
 
         # immatured gaussians, gradient is needed here
@@ -86,6 +82,10 @@ class SwinGaussianModel:
         self._frame_birth = torch.empty(0)
         self._frame_start = torch.empty(0)
         self._frame_end = torch.empty(0)
+
+        self.max_lifespan = max_lifespan
+        self.buffer_size = matured_buffer_size
+        self.matured_ctr = 0
 
         '''
         spatial model
@@ -131,6 +131,26 @@ class SwinGaussianModel:
             self.denom,
             self.optimizer.state_dict(),
             self.spatial_lr_scale,
+
+            # --------------------------------- new paras -------------------------------- #
+            self.max_lifespan,
+            self.buffer_size,
+            self.matured_ctr,
+
+            self._frame_birth,
+            self._frame_start,
+            self._frame_end,
+            
+            self._matured_xyz,
+            self._matured_features_dc,
+            self._matured_features_rest,
+            self._matured_scaling,
+            self._matured_rotation,
+            self._matured_opacity,
+            self._matured_frame_birth,
+            self._matured_frame_start,
+            self._matured_frame_end
+
         )
     
     def restore(self, model_args, training_args):
@@ -150,7 +170,29 @@ class SwinGaussianModel:
         xyz_gradient_accum, 
         denom,
         opt_dict, 
-        self.spatial_lr_scale) = model_args
+        self.spatial_lr_scale,
+        
+        # --------------------------------- new paras -------------------------------- #
+        self.max_lifespan,
+        self.buffer_size,
+        self.matured_ctr,
+
+        self._frame_birth,
+        self._frame_start,
+        self._frame_end,
+        
+        self._matured_xyz,
+        self._matured_features_dc,
+        self._matured_features_rest,
+        self._matured_scaling,
+        self._matured_rotation,
+        self._matured_opacity,
+        self._matured_frame_birth,
+        self._matured_frame_start,
+        self._matured_frame_end
+        
+        ) = model_args
+
         self.training_setup(training_args)
         self.xyz_gradient_accum = xyz_gradient_accum
         self.denom = denom
@@ -709,6 +751,59 @@ class SwinGaussianModel:
         for f in swin_mgr.all_frames():
             dead_mask = (immature_pc['opacity'] <= 0.005).squeeze(-1) & (immature_pc['birth_frame'] == f)
             alive_mask = (immature_pc['opacity'] > 0.005).squeeze(-1) & (immature_pc['birth_frame'] >= f)
+            if show_info:
+                print(f"[frame {f}] start relocate gaussians: {dead_mask.sum()} dead, {alive_mask.sum()} alive")
+
+                # manually log the relocation process
+                with open("result.txt", "a") as file:
+                    file.write(f"\n[frame {f}] start relocate gaussians: {dead_mask.sum()} dead, {alive_mask.sum()} alive")
+
+            if dead_mask.sum() == 0 or alive_mask.sum() == 0:
+                continue
+
+            dead_indices = dead_mask.nonzero(as_tuple=True)[0]
+            alive_indices = alive_mask.nonzero(as_tuple=True)[0]
+
+            probs = (immature_pc['opacity'][alive_indices, 0]) 
+            reinit_idx, _ = self._sample_alives(alive_indices=alive_indices, probs=probs, num=dead_indices.shape[0])
+
+            dead_indices_merge = torch.cat((dead_indices_merge, dead_indices), dim=0)
+            reinit_idx_merge = torch.cat((reinit_idx_merge, reinit_idx), dim=0)
+
+        ratio = torch.bincount(reinit_idx_merge).unsqueeze(-1)
+
+        (
+            self._xyz[dead_indices_merge], 
+            self._features_dc[dead_indices_merge],
+            self._features_rest[dead_indices_merge],
+            self._opacity[dead_indices_merge],
+            self._scaling[dead_indices_merge],
+            self._rotation[dead_indices_merge] 
+        ) = self._update_params(reinit_idx_merge, ratio=ratio)
+        
+        self._opacity[reinit_idx_merge] = self._opacity[dead_indices_merge]
+        self._scaling[reinit_idx_merge] = self._scaling[dead_indices_merge]
+
+        self.replace_tensors_to_optimizer(inds=reinit_idx_merge)
+
+        viable = (self._frame_birth[dead_indices_merge] <= self._frame_birth[reinit_idx_merge]).unsqueeze(-1)
+        assert torch.all(viable), "The gaussians to be relocated should born earlier"
+        self._frame_start[dead_indices_merge] = self._frame_start[reinit_idx_merge]
+
+
+    def relocate_gs_immuture_safe(self, swin_mgr, show_info=False):
+        '''
+        move dead gaussian to those alives
+        '''
+        immature_pc = self.get_immature_para(para=["opacity", "birth_frame"])
+        dead_indices_merge = torch.empty(0, device="cuda", dtype=torch.long)
+        reinit_idx_merge = torch.empty(0, device="cuda", dtype=torch.long)
+
+        for f in swin_mgr.all_frames():
+            dead_mask = (immature_pc['opacity'] <= 0.005).squeeze(-1) & \
+                        (immature_pc['birth_frame'] == f)
+            alive_mask = (immature_pc['opacity'] > 0.005).squeeze(-1) & \
+                        (immature_pc['birth_frame'] >= f)
             if show_info:
                 print(f"[frame {f}] start relocate gaussians: {dead_mask.sum()} dead, {alive_mask.sum()} alive")
 

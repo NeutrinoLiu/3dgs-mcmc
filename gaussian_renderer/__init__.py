@@ -102,8 +102,7 @@ def render(viewpoint_camera, pc : GaussianModel, pipe, bg_color : torch.Tensor, 
             "is_used": is_used}
 
 
-def deformable_render(viewpoint_camera, pc : SwinGaussianModel, pipe, bg_color : torch.Tensor, scaling_modifier = 1.0, override_color = None,
-                      swin_mgr=None):
+def deformable_render(viewpoint_camera, pc : SwinGaussianModel, pipe, bg_color : torch.Tensor, scaling_modifier = 1.0, override_color = None):
     """
     Render the scene. 
     also take camera.frame into consideration

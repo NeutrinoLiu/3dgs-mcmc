@@ -100,7 +100,9 @@ class Scene:
 class DynamicScene:
 
     gaussians : GaussianModel
-    MAX_FRAME_IN_MEMORY = 10
+    # modify these values to change the maximum number of frames in memory
+    # for a 4090 with 24GB of memory, 10 frames is a good value
+    MAX_FRAME_IN_MEMORY = 8
     MAX_TEST_FRAME_IN_MEMORY = 40
 
     def __init__(self, args : ModelParams, gaussians : GaussianModel, load_iteration=None, shuffle=True, resolution_scales=[1.0]):
@@ -190,13 +192,7 @@ class DynamicScene:
     def getTestCamerasAt(self, t, scale=1.0):
         return self.batchGetTestCam([t], scale)[t]
 
-    # batch cam fetch
     def batchGetTrainCam(self, t_list, scale=1.0):
-        return self.batch_activate_train(t_list, scale)
-    def batchGetTestCam(self, t_list, scale=1.0):
-        return self.batch_activate_test(t_list, scale)
-
-    def batch_activate_train(self, t_list, scale=1.0):
         if len(t_list) > self.MAX_FRAME_IN_MEMORY:
             assert False, f"too many frames to activate, {len(t_list)} > {self.MAX_FRAME_IN_MEMORY}"
         # deactive all frames that are not in t_list
@@ -209,7 +205,7 @@ class DynamicScene:
         for t, s in ts_list:
             ret += self._activate(t, s, test=False)
         return ret
-    def batch_activate_test(self, t_list, scale=1.0):
+    def batchGetTestCam(self, t_list, scale=1.0):
         if len(t_list) > self.MAX_TEST_FRAME_IN_MEMORY:
             assert False, f"too many frames to activate, {len(t_list)} > {self.MAX_TEST_FRAME_IN_MEMORY}"
         # deactive all frames that are not in t_list

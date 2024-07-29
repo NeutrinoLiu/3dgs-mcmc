@@ -112,8 +112,8 @@ def train_slide_window(dataset_args, train_args, pipe_args, args,
                        gaussians: SwinGaussianModel, scene: DynamicScene,
                        swin_mgr: SliWinManager, 
                        tb_writer,
-                       genesis: bool = False):
-    first_iter = 0
+                       genesis: bool = False,
+                       first_iter: int = 0):
 
     bg_color = [1, 1, 1] if dataset_args.white_background else [0, 0, 0]
     background = torch.tensor(bg_color, dtype=torch.float32, device="cuda")
@@ -128,7 +128,7 @@ def train_slide_window(dataset_args, train_args, pipe_args, args,
     # scene.unloadAllFrames()
     
     ema_loss_for_log = 0.0
-    total_iterations = train_args.iterations if not genesis else train_args.genesis_iterations
+    total_iterations = train_args.iterations
     progress_bar = tqdm(range(first_iter, total_iterations), desc="Training progress")
     first_iter += 1
 
@@ -136,7 +136,6 @@ def train_slide_window(dataset_args, train_args, pipe_args, args,
 
 
     for iter in range(first_iter, total_iterations):
-
         iter_start.record()
         xyz_lr = gaussians.update_learning_rate(iter)
         if genesis and iter % 1000 == 0:
@@ -171,6 +170,11 @@ def train_slide_window(dataset_args, train_args, pipe_args, args,
         # TODO: add arap regularization
 
         loss.backward()
+
+        # if iter > 606 and iter < 10000:
+        #     print(f"iter: {iter}, image shape: {image.shape}, gt shape: {gt_image.shape}")
+        #     breakpoint()
+
         iter_end.record()
 
         with torch.no_grad():
@@ -228,35 +232,11 @@ def train_slide_window(dataset_args, train_args, pipe_args, args,
             # training status save
             if (iter in args.checkpoint_iterations):
                 print("\n[ITER {}] Saving Checkpoint".format(iter))
-                torch.save((gaussians.capture(), iter), scene.model_path + "/chkpnt" + str(iter) + ".pth")
+                torch.save((gaussians.capture(), swin_mgr.state_dump(), iter), f"{scene.model_path}/chkpnt_{swin_mgr.frame_start}_{iter}.pth")
 
-def train():
-    # ------------------------------- args parsing ------------------------------- #
-    parser = ArgumentParser(description="Training script parameters")
-    lp = ModelParams(parser)
-    op = OptimizationParams(parser)
-    pp = PipelineParams(parser)
-    parser.add_argument('--ip', type=str, default="127.0.0.1")
-    parser.add_argument('--port', type=int, default=6009)
-    parser.add_argument('--debug_from', type=int, default=-1)
-    parser.add_argument('--detect_anomaly', action='store_true', default=False)
-    parser.add_argument("--test_iterations", nargs="+", type=int, default=list(range(1_000, 30_000, 1_000)))
-    parser.add_argument("--save_iterations", nargs="+", type=int, default=list(range(25_000, 30_000, 5_000)))
-    parser.add_argument("--quiet", action="store_true")
-    parser.add_argument("--checkpoint_iterations", nargs="+", type=int, default=[])
-    parser.add_argument("--start_checkpoint", type=str, default = None)
-
-    parser.add_argument("--swin_size", type=int, default=5)
-    
-    args = parser.parse_args(sys.argv[1:])
-    args.save_iterations.append(args.iterations)
-    print("Optimizing " + args.model_path)
-
-    dataset_args = lp.extract(args)
-    train_args = op.extract(args)
-    pipe_args = pp.extract(args)
-
+def train(dataset_args, train_args, pipe_args, args):
     safe_state(args.quiet)
+    print(f"Dectect anomaly: {args.detect_anomaly}")
     torch.autograd.set_detect_anomaly(args.detect_anomaly)
     tb_writer = prepare_output_and_logger(dataset_args)
 
@@ -267,18 +247,24 @@ def train():
     scene = DynamicScene(dataset_args, gaussians)
     swin_mgr = SliWinManager(args.swin_size, scene.max_frame)
 
-    # ---------------------------------- bootup ---------------------------------- #
-    # swin_mgr as [0, N)
-    # train with all MAX_CAP gs with life [0, N)
-    # call then genesis gs
-    train_slide_window(dataset_args, train_args, pipe_args, args, 
-                       gaussians, scene, swin_mgr, tb_writer, True)
-
-    # --------------------------- decay the genesis gs: -------------------------- #
-    # each 1/N's life was reduced to [0, i) i in [1..N]
-    gaussians.decay_genesis() # genesis is not mature yet
-
-    swin_mgr.tick() # move the window to [1, N+1)
+    first_iter = 0
+    if args.start_checkpoint:
+        print(f"Loading checkpoint {args.start_checkpoint}")
+        checkpoint = torch.load(args.start_checkpoint)
+        gaussians.restore(checkpoint[0], train_args)
+        swin_mgr.state_load(checkpoint[1])
+        first_iter = checkpoint[2]
+        print(f"Checkpoint {first_iter} of {swin_mgr} loaded")
+    
+    # finish init window first
+    genesis = swin_mgr.frame_start == 0
+    train_slide_window(dataset_args, train_args, pipe_args, args,
+                    gaussians, scene, swin_mgr, tb_writer, 
+                    genesis=genesis,
+                    first_iter=first_iter)
+    if genesis:
+        gaussians.decay_genesis()
+    swin_mgr.tick()
 
     # ----------------------- start sliding window training ---------------------- #
     while swin_mgr.frame_start < swin_mgr.max_frame:
@@ -299,6 +285,34 @@ def train():
     # mature them
     gaussians.mature_last_frame(swin_mgr.max_frame-1)
 
+def parse():
+    # ------------------------------- args parsing ------------------------------- #
+    parser = ArgumentParser(description="Training script parameters")
+    lp = ModelParams(parser)
+    op = OptimizationParams(parser)
+    pp = PipelineParams(parser)
+    parser.add_argument('--ip', type=str, default="127.0.0.1")
+    parser.add_argument('--port', type=int, default=6009)
+    parser.add_argument('--debug_from', type=int, default=-1)
+    parser.add_argument('--detect_anomaly', action='store_true', default=False)
+    parser.add_argument("--test_iterations", nargs="+", type=int, default=list(range(1_000, 30_000, 1_000)))
+    parser.add_argument("--save_iterations", nargs="+", type=int, default=[])
+    parser.add_argument("--quiet", action="store_true")
+    parser.add_argument("--checkpoint_iterations", nargs="+", type=int, default=[29_000, 30_000])
+    parser.add_argument("--start_checkpoint", type=str, default = None)
+
+    parser.add_argument("--swin_size", type=int, default=5)
+    
+    args = parser.parse_args(sys.argv[1:])
+    args.save_iterations.append(args.iterations)
+    print("Optimizing " + args.model_path)
+
+    dataset_args = lp.extract(args)
+    train_args = op.extract(args)
+    pipe_args = pp.extract(args)
+
+    return dataset_args, train_args, pipe_args, args
+
 if __name__ == "__main__":
     # breakpoint()
     # current version
@@ -306,5 +320,6 @@ if __name__ == "__main__":
     # i.e. all guassian still stays in GDDR
     # ignore check point
     random.seed(314159)
-    train()
+    dataset_args, train_args, pipe_args, args = parse()
+    train(dataset_args, train_args, pipe_args, args)
     

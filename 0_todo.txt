@@ -20,3 +20,6 @@ make the gaussians spatialtempo
     add new paras
     add transformation function
     make time a tensor not a cpu value
+
+
+rotation quaterion in 3dgs is scalar first
