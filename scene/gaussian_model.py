@@ -475,8 +475,10 @@ class SwinGaussianModel:
         # the buffer only keeps the latest buffer_size gaussians
         dump_para = {}
         for pname, para in self.matured_paras.items():
-            dump_para[pname] = para[-num_of_maturing:].clone()
+            assert "self.buffer_size" > num_of_maturing, "The buffer size should be larger than the number of maturing gaussians"
             para = para[-self.buffer_size:]
+            # TODO: do we need to clone before dump to disk?
+            dump_para[pname] = para[-num_of_maturing:]
         self._increasingly_dump(dump_para, "streamable.ply")
 
         self.matured_ctr += num_of_maturing

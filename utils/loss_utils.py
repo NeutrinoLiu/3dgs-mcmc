@@ -9,6 +9,10 @@
 # For inquiries contact  george.drettakis@inria.fr
 #
 
+import time
+import logging
+import open3d as o3d
+import numpy as np
 import torch
 import torch.nn.functional as F
 from torch.autograd import Variable
@@ -62,3 +66,36 @@ def _ssim(img1, img2, window, window_size, channel, size_average=True):
     else:
         return ssim_map.mean(1).mean(1).mean(1)
 
+# --------------------------------- ARAP loss -------------------------------- #
+
+def o3d_knn(pts, num_knn):
+    indices = []
+    sq_dists = []
+    pcd = o3d.geometry.PointCloud()
+    pcd.points = o3d.utility.Vector3dVector(np.ascontiguousarray(pts, np.float64))
+    pcd_tree = o3d.geometry.KDTreeFlann(pcd)
+    for p in pcd.points:
+        [_, i, d] = pcd_tree.search_knn_vector_3d(p, num_knn + 1)
+        indices.append(i[1:])
+        sq_dists.append(d[1:])
+    return np.array(sq_dists), np.array(indices)
+
+def build_neighbor(xyz: np.ndarray, num_knn=20, weight_coef=2000):
+    if isinstance(xyz, torch.Tensor):
+    # xyz should be self._xyz.detach().cpu().numpy()
+        xyz = xyz.detach().cpu().numpy()
+    assert isinstance(xyz, np.ndarray), f"xyz should be a numpy array, got {type(xyz)}"
+    logging.info(f"Building {num_knn}-nearest neighbors")
+    start_time = time.time()
+    sq_dists, indices = o3d_knn(xyz, num_knn)
+    neighbors = {}
+    neighbors['indices'] = torch.tensor(indices, 
+                                        dtype=torch.long,
+                                        device='cuda').contiguous()
+    neighbors['dist'] = torch.tensor(sq_dists, 
+                                         dtype=torch.float,
+                                         device='cuda').contiguous()
+    neighbors['weight'] = torch.exp(-weight_coef * neighbors['dist'])
+    end_time = time.time()
+    logging.info(f"KNN done. Time taken: {end_time - start_time:.2f} seconds")
+    return neighbors
