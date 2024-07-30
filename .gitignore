@@ -11,4 +11,4 @@ test_*
 *.log
 a06*
 result.txt
-useful_ckpt
+useful_ckpts

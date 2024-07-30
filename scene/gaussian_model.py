@@ -25,6 +25,7 @@ from simple_knn._C import distCUDA2
 from utils.graphics_utils import BasicPointCloud
 from utils.general_utils import strip_symmetric, build_scaling_rotation
 from utils.reloc_utils import compute_relocation_cuda
+from utils.tempo_utils import rigid_deform
 
 def indices_of(tensor):
     '''
@@ -92,11 +93,9 @@ class SwinGaussianModel:
         currently we use a native circular motion model,
         maybe we could use quarterion for temporal rotation in the future
         '''
-        # self._drift_v = torch.empty(0) # float(3) linear volocity.
-        # self._drift_w = torch.empty(0) # float(1) angular volocity
-        # self._drift_o = torch.empty(0) # float(3) center of circular motion
-        # self._drift_n = torch.empty(0) # float(3) norm of circular motion plane
-
+        self._rigid_v = torch.empty(0) # linear volocity.
+        self._rigid_rotvec = torch.empty(0) # rotation vector in quaternion
+        self._rigid_rotcen = torch.empty(0) # rotation center
 
         '''
         matured gaussians, no gradient is needed here
@@ -111,6 +110,10 @@ class SwinGaussianModel:
         self._matured_frame_birth = torch.empty(0).cuda()
         self._matured_frame_start = torch.empty(0).cuda()
         self._matured_frame_end = torch.empty(0).cuda()
+
+        self._matured_rigid_v = torch.empty(0).cuda()
+        self._matured_rigid_rotvec = torch.empty(0).cuda()
+        self._matured_rigid_rotcen = torch.empty(0).cuda()
 
     def capture(self):
         '''
@@ -137,9 +140,13 @@ class SwinGaussianModel:
             self.buffer_size,
             self.matured_ctr,
 
+            self._rigid_v,
+            self._rigid_rotvec,
+            self._rigid_rotcen,
             self._frame_birth,
             self._frame_start,
             self._frame_end,
+
             
             self._matured_xyz,
             self._matured_features_dc,
@@ -147,9 +154,12 @@ class SwinGaussianModel:
             self._matured_scaling,
             self._matured_rotation,
             self._matured_opacity,
+            self._matured_rigid_v,
+            self._matured_rigid_rotvec,
+            self._matured_rigid_rotcen,
             self._matured_frame_birth,
             self._matured_frame_start,
-            self._matured_frame_end
+            self._matured_frame_end,
 
         )
     
@@ -177,6 +187,9 @@ class SwinGaussianModel:
         self.buffer_size,
         self.matured_ctr,
 
+        self._rigid_v,
+        self._rigid_rotvec,
+        self._rigid_rotcen,
         self._frame_birth,
         self._frame_start,
         self._frame_end,
@@ -187,6 +200,9 @@ class SwinGaussianModel:
         self._matured_scaling,
         self._matured_rotation,
         self._matured_opacity,
+        self._matured_rigid_v,
+        self._matured_rigid_rotvec,
+        self._matured_rigid_rotcen,
         self._matured_frame_birth,
         self._matured_frame_start,
         self._matured_frame_end
@@ -256,10 +272,20 @@ class SwinGaussianModel:
         self._opacity = nn.Parameter(opacities.requires_grad_(True))
         self.max_radii2D = torch.zeros((self.get_xyz.shape[0]), device="cuda")
 
+        # TODO need a better init for rotvec
+        motion_rotvec = torch.zeros((self.get_xyz.shape[0], 3), device="cuda")
+        motion_rotvec[:, 0] = 1e-10
+        velocity = torch.zeros((self.get_xyz.shape[0], 3), device="cuda")
+        motion_rotcen = fused_point_cloud.clone() # use self as the rotation center
+
         # init from colmap SfM key points, use full lifespan
-        self._frame_birth = torch.zeros((self.get_xyz.shape[0]), device="cuda", dtype=torch.int32)
-        self._frame_start = torch.zeros((self.get_xyz.shape[0]), device="cuda", dtype=torch.int32)
-        self._frame_end   = torch.full((self.get_xyz.shape[0],), self.max_lifespan, device="cuda", dtype=torch.int32)
+        self._rigid_v = nn.Parameter(velocity.requires_grad_(True))
+        self._rigid_rotvec = nn.Parameter(motion_rotvec.requires_grad_(True))
+        self._rigid_rotcen = nn.Parameter(motion_rotcen.requires_grad_(True))
+
+        self._frame_birth = torch.zeros((self.get_xyz.shape[0]), device="cuda", dtype=torch.float)
+        self._frame_start = torch.zeros((self.get_xyz.shape[0]), device="cuda", dtype=torch.float)
+        self._frame_end   = torch.full((self.get_xyz.shape[0],), self.max_lifespan, device="cuda", dtype=torch.float)
 
     def training_setup(self, training_args):
         '''
@@ -275,7 +301,10 @@ class SwinGaussianModel:
             {'params': [self._features_rest], 'lr': training_args.feature_lr / 20.0, "name": "f_rest"},
             {'params': [self._opacity], 'lr': training_args.opacity_lr, "name": "opacity"},
             {'params': [self._scaling], 'lr': training_args.scaling_lr, "name": "scaling"},
-            {'params': [self._rotation], 'lr': training_args.rotation_lr, "name": "rotation"}
+            {'params': [self._rotation], 'lr': training_args.rotation_lr, "name": "rotation"},
+            {'params': [self._rigid_v], 'lr': training_args.rigid_v_lr, "name": "rigid_v"},
+            {'params': [self._rigid_rotvec], 'lr': training_args.rigid_rotvec_lr, "name": "rigid_rotvec"},
+            {'params': [self._rigid_rotcen], 'lr': training_args.rigid_rotcen_lr, "name": "rigid_rotcen"}
         ]
 
         self.optimizer = torch.optim.Adam(l, lr=0.0, eps=1e-15)
@@ -413,7 +442,10 @@ class SwinGaussianModel:
             "rotation": self._matured_rotation,
             "start_frame": self._matured_frame_start,
             "end_frame": self._matured_frame_end,
-            "birth_frame": self._matured_frame_birth
+            "birth_frame": self._matured_frame_birth,
+            "rigid_v": self._matured_rigid_v,
+            "rigid_rotvec": self._matured_rigid_rotvec,
+            "rigid_rotcen": self._matured_rigid_rotcen,
         }
 
     def _increasingly_dump(self, paras, path):
@@ -431,6 +463,10 @@ class SwinGaussianModel:
         self._matured_scaling = torch.cat((self._matured_scaling, self._scaling[mature_idx]), dim=0).detach()
         self._matured_rotation = torch.cat((self._matured_rotation, self._rotation[mature_idx]), dim=0).detach()
         self._matured_opacity = torch.cat((self._matured_opacity, self._opacity[mature_idx]), dim=0).detach()
+        self._matured_rigid_v = torch.cat((self._matured_rigid_v, self._rigid_v[mature_idx]), dim=0).detach()
+        self._matured_rigid_rotvec = torch.cat((self._matured_rigid_rotvec, self._rigid_rotvec[mature_idx]), dim=0).detach()
+        self._matured_rigid_rotcen = torch.cat((self._matured_rigid_rotcen, self._rigid_rotcen[mature_idx]), dim=0).detach()
+
         # breakpoint()
         self._matured_frame_birth = torch.cat((self._matured_frame_birth, self._frame_birth[mature_idx]), dim=0).detach()
         self._matured_frame_start = torch.cat((self._matured_frame_start, self._frame_start[mature_idx]), dim=0).detach()
@@ -446,19 +482,24 @@ class SwinGaussianModel:
         self.matured_ctr += num_of_maturing
         print("Matured {} gaussians, total {} now".format(num_of_maturing, self.matured_ctr))
 
-    def _rollover(self, mature_idx, elapse):
+    def _rollover(self, mature_idx, new_gs_lifespan):
 
         # we need a dynamic model to update the motion related paras
-        # self._xyz = self._xyz
-        # self._features_dc = self._features_dc
-        # self._features_rest = self._features_rest
-        # self._scaling = self._scaling
-        # self._rotation = self._rotation
-        # self._opacity = self._opacity
+        life_span = self._frame_end[mature_idx] - self._frame_start[mature_idx] + 1
+        self._xyz[mature_idx], self._rotation[mature_idx] = rigid_deform(
+            self._xyz[mature_idx],
+            self._rotation[mature_idx],
+            self._rigid_v[mature_idx],
+            self._rigid_rotvec[mature_idx],
+            self._rigid_rotcen[mature_idx],
+            life_span)
+        
+        # need to rebind the optimizer with para
+        self.replace_tensors_to_optimizer(mature_idx)
 
         self._frame_birth[mature_idx] = self._frame_end[mature_idx]
         self._frame_start[mature_idx] = self._frame_birth[mature_idx]
-        self._frame_end[mature_idx] += elapse
+        self._frame_end[mature_idx] += new_gs_lifespan
 
     def evolve(self, swin_mgr):
         # find out those immatured gaussians who canot fill up the whole window
@@ -476,9 +517,10 @@ class SwinGaussianModel:
         #  and then expand their lifespan 
         #           update their motion related paras
         #  so that they are the next generation now
+        with torch.no_grad():
+            self._mature(mature_idx)
+            self._rollover(mature_idx, self.max_lifespan)
 
-        self._mature(mature_idx)
-        self._rollover(mature_idx, self.max_lifespan)
     
     def mature_last_frame(self, last_frame):
         '''
@@ -490,6 +532,7 @@ class SwinGaussianModel:
                                       "start_frame", "end_frame", "birth_frame"]):
         '''
         return a dict of gs paras for all immuture gaussians
+        this function returns all immature para, so no timporal deformation is needed
         '''
         ret = {}
         for p in set(para):
@@ -517,16 +560,38 @@ class SwinGaussianModel:
         immature_frame_idx = indices_of((self._frame_start <= frame) & (self._frame_end > frame))
         matured_frame_idx = indices_of((self._matured_frame_start <= frame) & (self._matured_frame_end > frame))
         return immature_frame_idx, matured_frame_idx
+
     def get_basic_para_at(self, frame, para=["xyz", "feature", "opacity", "scaling", "rotation"]):
         '''
         return a dict of gs paras given a frame
         '''
         ret = {}
         immature_frame_idx, matured_frame_idx = self.derive_idx_of_active(frame)
+        age = torch.cat((frame - self._frame_start[immature_frame_idx], 
+                         frame - self._matured_frame_start[matured_frame_idx]),
+                        dim=0)
         for p in set(para):
-            if p == "xyz":
-                # TODO: deform the xyz
-                ret[p] = torch.cat((self._xyz[immature_frame_idx], self._matured_xyz[matured_frame_idx]), dim=0)
+            if p == "xyz" or p == "rotation":
+                if "rotation" in ret and "xyz" in ret:
+                    continue
+                rot = torch.cat((self._rotation[immature_frame_idx],
+                                 self._matured_rotation[matured_frame_idx]), dim=0)
+                pos = torch.cat((self._xyz[immature_frame_idx], self._matured_xyz[matured_frame_idx]), dim=0)
+                rigid_v = torch.cat((self._rigid_v[immature_frame_idx],
+                                     self._matured_rigid_v[matured_frame_idx]), dim=0)
+                rigid_rotvec = torch.cat((self._rigid_rotvec[immature_frame_idx],
+                                          self._matured_rigid_rotvec[matured_frame_idx]), dim=0)
+                rigid_rotcen = torch.cat((self._rigid_rotcen[immature_frame_idx],
+                                          self._matured_rigid_rotcen[matured_frame_idx]), dim=0)
+                # age based deformation
+                pos, rot = rigid_deform(pos, rot,
+                                        rigid_v,
+                                        rigid_rotvec,
+                                        rigid_rotcen,
+                                        age)
+                ret["rotation"] = self.rotation_activation(rot)
+                ret["xyz"] = pos
+                
             elif p == "feature":
                 im_feature = torch.cat((self._features_dc[immature_frame_idx],
                                        self._features_rest[immature_frame_idx]), dim=1)
@@ -539,10 +604,6 @@ class SwinGaussianModel:
             elif p == "scaling":
                 ret[p] = self.scaling_activation(torch.cat((self._scaling[immature_frame_idx],
                                                             self._matured_scaling[matured_frame_idx]), dim=0))
-            elif p == "rotation":
-                # TODO: deform the rotation
-                ret[p] = self.rotation_activation(torch.cat((self._rotation[immature_frame_idx],
-                                                             self._matured_rotation[matured_frame_idx]), dim=0))
             else:
                 assert False, "Unknown parameter {}".format(p)
         return ret
@@ -576,7 +637,9 @@ class SwinGaussianModel:
 
         return optimizable_tensors
 
-    def densification_postfix(self, new_xyz, new_features_dc, new_features_rest, new_opacities, new_scaling, new_rotation, reset_params=True):
+    def densification_postfix(self, new_xyz, new_features_dc, new_features_rest, new_opacities, new_scaling, new_rotation,
+                              new_rigid_v, new_rigid_rotvec, new_rigid_rotcen,
+                              reset_params=True):
         '''
         para linked to optimizer get longer
         update the reference in guassianModel object as well
@@ -587,7 +650,10 @@ class SwinGaussianModel:
         "f_rest": new_features_rest,
         "opacity": new_opacities,
         "scaling" : new_scaling,
-        "rotation" : new_rotation}
+        "rotation" : new_rotation,
+        "rigid_v": new_rigid_v,
+        "rigid_rotvec": new_rigid_rotvec,
+        "rigid_rotcen": new_rigid_rotcen}
 
         optimizable_tensors = self.cat_tensors_to_optimizer(d)
         self._xyz = optimizable_tensors["xyz"]
@@ -596,6 +662,9 @@ class SwinGaussianModel:
         self._opacity = optimizable_tensors["opacity"]
         self._scaling = optimizable_tensors["scaling"]
         self._rotation = optimizable_tensors["rotation"]
+        self._rigid_v = optimizable_tensors["rigid_v"]
+        self._rigid_rotvec = optimizable_tensors["rigid_rotvec"]
+        self._rigid_rotcen = optimizable_tensors["rigid_rotcen"]
 
         if reset_params:
             self.xyz_gradient_accum = torch.zeros((self.get_xyz.shape[0], 1), device="cuda")
@@ -612,7 +681,10 @@ class SwinGaussianModel:
             "f_rest": self._features_rest,
             "opacity": self._opacity,
             "scaling" : self._scaling,
-            "rotation" : self._rotation}
+            "rotation" : self._rotation,
+            "rigid_v": self._rigid_v,
+            "rigid_rotvec": self._rigid_rotvec,
+            "rigid_rotcen": self._rigid_rotcen}
 
         optimizable_tensors = {}
         for group in self.optimizer.param_groups:
@@ -638,7 +710,10 @@ class SwinGaussianModel:
         self._features_rest = optimizable_tensors["f_rest"]
         self._opacity = optimizable_tensors["opacity"]
         self._scaling = optimizable_tensors["scaling"]
-        self._rotation = optimizable_tensors["rotation"] 
+        self._rotation = optimizable_tensors["rotation"]
+        self._rigid_v = optimizable_tensors["rigid_v"]
+        self._rigid_rotvec = optimizable_tensors["rigid_rotvec"]
+        self._rigid_rotcen = optimizable_tensors["rigid_rotcen"]
 
         return optimizable_tensors
 
@@ -657,7 +732,15 @@ class SwinGaussianModel:
         new_opacity = self.inverse_opacity_activation(new_opacity)
         new_scaling = self.scaling_inverse_activation(new_scaling.reshape(-1, 3))
 
-        return self._xyz[idxs], self._features_dc[idxs], self._features_rest[idxs], new_opacity, new_scaling, self._rotation[idxs]
+        return (self._xyz[idxs],
+                self._features_dc[idxs],
+                self._features_rest[idxs],
+                new_opacity,
+                new_scaling,
+                self._rotation[idxs],
+                self._rigid_v[idxs],
+                self._rigid_rotvec[idxs],
+                self._rigid_rotcen[idxs])
 
 
     def _sample_alives(self, probs, num, alive_indices=None):
@@ -696,7 +779,10 @@ class SwinGaussianModel:
             self._features_rest[dead_indices],
             self._opacity[dead_indices],
             self._scaling[dead_indices],
-            self._rotation[dead_indices] 
+            self._rotation[dead_indices],
+            self._rigid_v[dead_indices],
+            self._rigid_rotvec[dead_indices],
+            self._rigid_rotcen[dead_indices]
         ) = self._update_params(reinit_idx, ratio=ratio)
         
         self._opacity[reinit_idx] = self._opacity[dead_indices]
@@ -727,7 +813,10 @@ class SwinGaussianModel:
             new_features_rest,
             new_opacity,
             new_scaling,
-            new_rotation 
+            new_rotation,
+            new_rigid_v,
+            new_rigid_rotvec,
+            new_rigid_rotcen
         ) = self._update_params(add_idx, ratio=ratio)
 
         # original high opacity gaussian get weakened first
@@ -735,7 +824,16 @@ class SwinGaussianModel:
         self._scaling[add_idx] = new_scaling
 
         # then add those new gaussians to the end of para list
-        self.densification_postfix(new_xyz, new_features_dc, new_features_rest, new_opacity, new_scaling, new_rotation, reset_params=False)
+        self.densification_postfix(new_xyz,
+                                   new_features_dc,
+                                   new_features_rest,
+                                   new_opacity,
+                                   new_scaling,
+                                   new_rotation,
+                                   new_rigid_v,
+                                   new_rigid_rotvec,
+                                   new_rigid_rotcen,
+                                   reset_params=False)
         self.replace_tensors_to_optimizer(inds=add_idx)
 
         return num_gs
@@ -778,60 +876,10 @@ class SwinGaussianModel:
             self._features_rest[dead_indices_merge],
             self._opacity[dead_indices_merge],
             self._scaling[dead_indices_merge],
-            self._rotation[dead_indices_merge] 
-        ) = self._update_params(reinit_idx_merge, ratio=ratio)
-        
-        self._opacity[reinit_idx_merge] = self._opacity[dead_indices_merge]
-        self._scaling[reinit_idx_merge] = self._scaling[dead_indices_merge]
-
-        self.replace_tensors_to_optimizer(inds=reinit_idx_merge)
-
-        viable = (self._frame_birth[dead_indices_merge] <= self._frame_birth[reinit_idx_merge]).unsqueeze(-1)
-        assert torch.all(viable), "The gaussians to be relocated should born earlier"
-        self._frame_start[dead_indices_merge] = self._frame_start[reinit_idx_merge]
-
-
-    def relocate_gs_immuture_safe(self, swin_mgr, show_info=False):
-        '''
-        move dead gaussian to those alives
-        '''
-        immature_pc = self.get_immature_para(para=["opacity", "birth_frame"])
-        dead_indices_merge = torch.empty(0, device="cuda", dtype=torch.long)
-        reinit_idx_merge = torch.empty(0, device="cuda", dtype=torch.long)
-
-        for f in swin_mgr.all_frames():
-            dead_mask = (immature_pc['opacity'] <= 0.005).squeeze(-1) & \
-                        (immature_pc['birth_frame'] == f)
-            alive_mask = (immature_pc['opacity'] > 0.005).squeeze(-1) & \
-                        (immature_pc['birth_frame'] >= f)
-            if show_info:
-                print(f"[frame {f}] start relocate gaussians: {dead_mask.sum()} dead, {alive_mask.sum()} alive")
-
-                # manually log the relocation process
-                with open("result.txt", "a") as file:
-                    file.write(f"\n[frame {f}] start relocate gaussians: {dead_mask.sum()} dead, {alive_mask.sum()} alive")
-
-            if dead_mask.sum() == 0 or alive_mask.sum() == 0:
-                continue
-
-            dead_indices = dead_mask.nonzero(as_tuple=True)[0]
-            alive_indices = alive_mask.nonzero(as_tuple=True)[0]
-
-            probs = (immature_pc['opacity'][alive_indices, 0]) 
-            reinit_idx, _ = self._sample_alives(alive_indices=alive_indices, probs=probs, num=dead_indices.shape[0])
-
-            dead_indices_merge = torch.cat((dead_indices_merge, dead_indices), dim=0)
-            reinit_idx_merge = torch.cat((reinit_idx_merge, reinit_idx), dim=0)
-
-        ratio = torch.bincount(reinit_idx_merge).unsqueeze(-1)
-
-        (
-            self._xyz[dead_indices_merge], 
-            self._features_dc[dead_indices_merge],
-            self._features_rest[dead_indices_merge],
-            self._opacity[dead_indices_merge],
-            self._scaling[dead_indices_merge],
-            self._rotation[dead_indices_merge] 
+            self._rotation[dead_indices_merge],
+            self._rigid_v[dead_indices_merge],
+            self._rigid_rotvec[dead_indices_merge],
+            self._rigid_rotcen[dead_indices_merge]
         ) = self._update_params(reinit_idx_merge, ratio=ratio)
         
         self._opacity[reinit_idx_merge] = self._opacity[dead_indices_merge]

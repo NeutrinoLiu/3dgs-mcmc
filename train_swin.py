@@ -245,7 +245,9 @@ def train(dataset_args, train_args, pipe_args, args):
                                   max_lifespan=args.swin_size,
                                   matured_buffer_size=args.cap_max)
     scene = DynamicScene(dataset_args, gaussians)
-    swin_mgr = SliWinManager(args.swin_size, scene.max_frame)
+    swin_mgr = SliWinManager(args.swin_size,
+                             scene.max_frame,
+                             DynamicScene.MAX_FRAME_IN_MEMORY)
 
     first_iter = 0
     if args.start_checkpoint:
@@ -262,6 +264,8 @@ def train(dataset_args, train_args, pipe_args, args):
                     gaussians, scene, swin_mgr, tb_writer, 
                     genesis=genesis,
                     first_iter=first_iter)
+    if args.first_frame_only:
+        return
     if genesis:
         gaussians.decay_genesis()
     swin_mgr.tick()
@@ -302,7 +306,8 @@ def parse():
     parser.add_argument("--start_checkpoint", type=str, default = None)
 
     parser.add_argument("--swin_size", type=int, default=5)
-    
+    parser.add_argument("--first_frame_only", action="store_true", default=False)
+
     args = parser.parse_args(sys.argv[1:])
     args.save_iterations.append(args.iterations)
     print("Optimizing " + args.model_path)

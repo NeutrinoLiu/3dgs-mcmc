@@ -23,3 +23,5 @@ make the gaussians spatialtempo
 
 
 rotation quaterion in 3dgs is scalar first
+
+for swin_size = 25

@@ -31,7 +31,7 @@ except ImportError:
     TENSORBOARD_FOUND = False
 
 # deform according to frame
-from utils.tempo_utils import deform, SliWinManager
+from utils.tempo_utils import rigid_deform, SliWinManager
 
 def training(dataset, opt, pipe, args):
     # breakpoint()

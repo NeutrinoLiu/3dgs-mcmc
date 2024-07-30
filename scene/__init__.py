@@ -99,13 +99,13 @@ class Scene:
 
 class DynamicScene:
 
-    gaussians : GaussianModel
+    gaussians : SwinGaussianModel
     # modify these values to change the maximum number of frames in memory
     # for a 4090 with 24GB of memory, 10 frames is a good value
-    MAX_FRAME_IN_MEMORY = 8
+    MAX_FRAME_IN_MEMORY = 10
     MAX_TEST_FRAME_IN_MEMORY = 40
 
-    def __init__(self, args : ModelParams, gaussians : GaussianModel, load_iteration=None, shuffle=True, resolution_scales=[1.0]):
+    def __init__(self, args : ModelParams, gaussians : SwinGaussianModel, load_iteration=None, shuffle=True, resolution_scales=[1.0]):
         """b
         :param path: Path to colmap scene main folder.
         """

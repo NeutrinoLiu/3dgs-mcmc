@@ -72,7 +72,6 @@ class PipelineParams(ParamGroup):
 
 class OptimizationParams(ParamGroup):
     def __init__(self, parser):
-        # TODO: hyperpara tuning
         self.iterations = 30_010
         # self.genesis_iterations = 30_010
         self.position_lr_init = 0.00016
@@ -83,6 +82,12 @@ class OptimizationParams(ParamGroup):
         self.opacity_lr = 0.05
         self.scaling_lr = 0.005
         self.rotation_lr = 0.001
+
+        # TODO: hyperpara tuning
+        self.rigid_v_lr = 0.000001
+        self.rigid_rotvec_lr = 0.000001
+        self.rigid_rotcen_lr = 0.000001
+
         self.percent_dense = 0.01
         self.lambda_dssim = 0.2
         self.densification_interval = 100
