@@ -52,8 +52,14 @@ def rigid_deform(xyz, rot,
                  rigid_v,
                  rigid_rotvec,
                  rigid_rotcen,
-                 time_span):
+                 time_span,
+                 skip=False):
     assert xyz.shape[0] == rigid_v.shape[0] == time_span.shape[0], f"Batch size mismatch: {xyz.shape[0]} != {rigid_v.shape[0]} != {time_span.shape[0]}"
+    if skip:
+        # avoid empty gradient, you need to use those tensor
+        ret_xyz = xyz + rigid_v * 0 + rigid_rotvec * 0 + rigid_rotcen * 0
+        return  ret_xyz, rot
+
     time_span_unsqueeze = time_span.unsqueeze(-1)
     position_shift = rigid_v * time_span_unsqueeze
     rotation_vec = rigid_rotvec * time_span_unsqueeze
@@ -101,7 +107,7 @@ class SliWinManager:
         self.frame_end += 1
     def fetch_cams(self, fetcher):
         return fetcher(self.sampled_frames()).copy()
-    def sampled_frames(self, resample=False):
+    def sampled_frames(self, resample=True):
         if resample or (self._sampled_frames is None):
             self._sampled_frames = self.all_frames()
             if len(self._sampled_frames) > self.max_sample:

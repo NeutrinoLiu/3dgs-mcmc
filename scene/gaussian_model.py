@@ -57,7 +57,8 @@ class SwinGaussianModel:
 
     def __init__(self, sh_degree : int,
                  max_lifespan : int,
-                 matured_buffer_size : int):
+                 matured_buffer_size : int,
+                 disable_deform : bool):
         '''
         attributes
         '''
@@ -87,6 +88,7 @@ class SwinGaussianModel:
         self.max_lifespan = max_lifespan
         self.buffer_size = matured_buffer_size
         self.matured_ctr = 0
+        self.disable_deform = disable_deform
 
         '''
         spatial model
@@ -475,7 +477,7 @@ class SwinGaussianModel:
         # the buffer only keeps the latest buffer_size gaussians
         dump_para = {}
         for pname, para in self.matured_paras.items():
-            assert "self.buffer_size" > num_of_maturing, "The buffer size should be larger than the number of maturing gaussians"
+            assert self.buffer_size >= num_of_maturing, f"The buffer size ({self.buffer_size}) should be larger than the number of maturing gaussians ({num_of_maturing})"
             para = para[-self.buffer_size:]
             # TODO: do we need to clone before dump to disk?
             dump_para[pname] = para[-num_of_maturing:]
@@ -494,7 +496,8 @@ class SwinGaussianModel:
             self._rigid_v[mature_idx],
             self._rigid_rotvec[mature_idx],
             self._rigid_rotcen[mature_idx],
-            life_span)
+            life_span,
+            skip=self.disable_deform)
         
         # need to rebind the optimizer with para
         self.replace_tensors_to_optimizer(mature_idx)
@@ -524,11 +527,11 @@ class SwinGaussianModel:
             self._rollover(mature_idx, self.max_lifespan)
 
     
-    def mature_last_frame(self, last_frame):
+    def mature_rest(self):
         '''
-        mature all gaussians that are in the last frame
+        mature all rest of the gaussian
         '''
-        self._mature(indices_of(self._frame_start == last_frame))
+        self._mature(indices_of(self._frame_start >= 0))
 
     def get_immature_para(self, para=["xyz", "feature", "opacity", "scaling", "rotation",
                                       "start_frame", "end_frame", "birth_frame"]):
@@ -590,7 +593,8 @@ class SwinGaussianModel:
                                         rigid_v,
                                         rigid_rotvec,
                                         rigid_rotcen,
-                                        age)
+                                        age,
+                                        skip=self.disable_deform)
                 ret["rotation"] = self.rotation_activation(rot)
                 ret["xyz"] = pos
                 

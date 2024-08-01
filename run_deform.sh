@@ -24,11 +24,13 @@ cleanup() {
 trap cleanup SIGINT
 
 
-all_values=(1e-4 1e-5 1e-6)
+lr1_all=(5e-7 1e-8 5e-9 1e-9)
+lr2_all=(5e-7 1e-7 5e-8 1e-8)
+lr3_all=(1e-5 5e-5 1e-4 5e-4)
 
-for lr1 in ${all_values[@]}; do
-    for lr2 in ${all_values[@]}; do
-        for lr3 in ${all_values[@]}; do
+for lr1 in ${lr1_all[@]}; do
+    for lr2 in ${lr2_all[@]}; do
+        for lr3 in ${lr3_all[@]}; do
             run $lr1 $lr2 $lr3
         done
     done

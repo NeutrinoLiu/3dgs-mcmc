@@ -12,7 +12,7 @@ from argparse import ArgumentParser, Namespace
 from utils.tempo_utils import SliWinManager
 from arguments import ModelParams, PipelineParams, OptimizationParams
 from utils.general_utils import safe_state
-from utils.loss_utils import l1_loss, ssim
+from utils.loss_utils import l1_loss, ssim, build_neighbor
 from utils.image_utils import psnr
 
 
@@ -63,7 +63,8 @@ def training_report(tb_writer, iteration, Ll1, loss, l1_loss, elapsed, testing_i
     # Report test and samples of training set
     if iteration in testing_iterations:
         torch.cuda.empty_cache()
-        test_cams = scene.batchGetTestCam(swin_mgr.all_frames())
+        test_cams = sorted(scene.batchGetTestCam(swin_mgr.all_frames()),
+                           key=lambda x: x.frame)
         # train_cams = scene.batchGetTrainCamAt(swin_mgr.sampled_frames())
         validation_configs = ({'name': 'test', 'cameras' : test_cams}, 
                             #   {'name': 'train', 'cameras' : [train_cams[idx % len(train_cams)] for idx in range(5, 30, 5)]}
@@ -134,6 +135,7 @@ def train_slide_window(dataset_args, train_args, pipe_args, args,
 
     gaussians.training_setup(train_args)
 
+    neighbor = None
 
     for iter in range(first_iter, total_iterations):
         iter_start.record()
@@ -147,7 +149,7 @@ def train_slide_window(dataset_args, train_args, pipe_args, args,
         # ------------------------------ normal training ----------------------------- #
         if not viewpoint_stack:
             viewpoint_stack = scene.batchGetTrainCam(
-                swin_mgr.sampled_frames(resample=True)).copy()
+                swin_mgr.sampled_frames()).copy()
             random.shuffle(viewpoint_stack)
             viewpoint_cam = viewpoint_stack.pop(randint(0, len(viewpoint_stack)-1))
         else:
@@ -167,7 +169,7 @@ def train_slide_window(dataset_args, train_args, pipe_args, args,
         loss += args.opacity_reg * torch.abs(active_pc['opacity']).mean()
         loss += args.scale_reg * torch.abs(active_pc['scaling']).mean()
         # arap regularization
-        # TODO: add arap regularization
+        
 
         loss.backward()
 
@@ -198,8 +200,11 @@ def train_slide_window(dataset_args, train_args, pipe_args, args,
 
             # ------------------------------- densification ------------------------------ #
             # TODO, try to change different location for densification
+            if iter == train_args.densify_from_iter:
+                neighbor = build_neighbor(gaussians.get_immature_para(['xyz'])['xyz'])
             if iter < train_args.densify_until_iter and iter > train_args.densify_from_iter and iter % train_args.densification_interval == 0:
                 gaussians.relocate_gs_immuture(swin_mgr, iter % (train_args.densification_interval * 10)== 0)
+                neighbor = build_neighbor(gaussians.get_immature_para(['xyz'])['xyz'])
 
                 if genesis: # only increasing gaussian number for genesis
                     gaussians.add_new_gs(cap_max=args.cap_max)
@@ -243,7 +248,8 @@ def train(dataset_args, train_args, pipe_args, args):
     # ----------------------------------- init ----------------------------------- #
     gaussians = SwinGaussianModel(dataset_args.sh_degree,
                                   max_lifespan=args.swin_size,
-                                  matured_buffer_size=args.cap_max)
+                                  matured_buffer_size=args.cap_max,
+                                  disable_deform=args.no_deform)
     scene = DynamicScene(dataset_args, gaussians)
     swin_mgr = SliWinManager(args.swin_size,
                              scene.max_frame,
@@ -271,7 +277,8 @@ def train(dataset_args, train_args, pipe_args, args):
     swin_mgr.tick()
 
     # ----------------------- start sliding window training ---------------------- #
-    while swin_mgr.frame_start < swin_mgr.max_frame:
+    while swin_mgr.frame_end <= swin_mgr.max_frame:
+    # while swin_mgr.frame_start < swin_mgr.max_frame:
         # any current immature gaussian whose 
         #   life ends strictly before window_end, or to say
         #   can not fulfill the whole window range, will:
@@ -287,7 +294,7 @@ def train(dataset_args, train_args, pipe_args, args):
 
     # there are some immature gaussians in the last frame
     # mature them
-    gaussians.mature_last_frame(swin_mgr.max_frame-1)
+    gaussians.mature_rest()
 
 def parse():
     # ------------------------------- args parsing ------------------------------- #
@@ -307,6 +314,7 @@ def parse():
 
     parser.add_argument("--swin_size", type=int, default=5)
     parser.add_argument("--first_frame_only", action="store_true", default=False)
+    parser.add_argument("--no_deform", action='store_true', default=False)
 
     args = parser.parse_args(sys.argv[1:])
     args.save_iterations.append(args.iterations)
