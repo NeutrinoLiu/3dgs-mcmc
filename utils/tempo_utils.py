@@ -53,12 +53,15 @@ def rigid_deform(xyz, rot,
                  rigid_rotvec,
                  rigid_rotcen,
                  time_span,
-                 skip=False):
+                 skip=False,
+                 linear=False):
     assert xyz.shape[0] == rigid_v.shape[0] == time_span.shape[0], f"Batch size mismatch: {xyz.shape[0]} != {rigid_v.shape[0]} != {time_span.shape[0]}"
     if skip:
         # avoid empty gradient, you need to use those tensor
         ret_xyz = xyz + rigid_v * 0 + rigid_rotvec * 0 + rigid_rotcen * 0
         return  ret_xyz, rot
+    if linear:
+        return xyz + rigid_v * time_span.unsqueeze(-1) + rigid_rotvec * 0 + rigid_rotcen * 0, rot
 
     time_span_unsqueeze = time_span.unsqueeze(-1)
     position_shift = rigid_v * time_span_unsqueeze

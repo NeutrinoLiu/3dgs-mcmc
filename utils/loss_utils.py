@@ -99,3 +99,19 @@ def build_neighbor(xyz: np.ndarray, num_knn=20, weight_coef=2000):
     end_time = time.time()
     logging.info(f"KNN done. Time taken: {end_time - start_time:.2f} seconds")
     return neighbors
+
+def arap_loss(xyz,          # xyz for weight
+              paras,        # list of paras, [N, 3]
+              indices):         # para neighbors 
+    weight_coef=2000
+    nei_xyz = xyz[indices]   # N x K x 3
+    sq_dist = torch.sum((nei_xyz - xyz.unsqueeze(1)) ** 2, dim=-1) # N x K
+    weight = torch.exp(-weight_coef * sq_dist)
+    
+    penalty = torch.zeros((len(paras),), device='cuda')
+    for i, p in enumerate(paras):
+        para = p
+        nei_para = p[indices]   # N x K x 3
+        sq_dist = torch.sum((nei_para - para.unsqueeze(1)) ** 2, dim=-1) # N x K
+        penalty[i] = torch.sum(weight * sq_dist, dim=-1).mean()  # 1
+    return penalty

@@ -410,7 +410,7 @@ def readFixedCams(cams: dict):
     return cam_infos
 
 def readDynamicSceneInfo(path, images, eval, llffhold=8, init_type="random", num_pts=100000,
-                         max_frame=50, tempo_shuffle=False):
+                         max_frame=100, tempo_shuffle=False):
     '''
     a SwinGS dataset expect to follow the following dir structure:
 

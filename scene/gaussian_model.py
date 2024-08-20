@@ -26,6 +26,7 @@ from utils.graphics_utils import BasicPointCloud
 from utils.general_utils import strip_symmetric, build_scaling_rotation
 from utils.reloc_utils import compute_relocation_cuda
 from utils.tempo_utils import rigid_deform
+from utils.stream_utils import stream_dump
 
 def indices_of(tensor):
     '''
@@ -58,7 +59,8 @@ class SwinGaussianModel:
     def __init__(self, sh_degree : int,
                  max_lifespan : int,
                  matured_buffer_size : int,
-                 disable_deform : bool):
+                 deform : bool,
+                 dump_path : str):
         '''
         attributes
         '''
@@ -88,7 +90,8 @@ class SwinGaussianModel:
         self.max_lifespan = max_lifespan
         self.buffer_size = matured_buffer_size
         self.matured_ctr = 0
-        self.disable_deform = disable_deform
+        self.deform = deform
+        self.dump_path = dump_path
 
         '''
         spatial model
@@ -245,6 +248,7 @@ class SwinGaussianModel:
     def oneupSHdegree(self):
         if self.active_sh_degree < self.max_sh_degree:
             self.active_sh_degree += 1
+            print("Active SH degree increased to ", self.active_sh_degree)
 
     def create_from_pcd(self, pcd : BasicPointCloud, spatial_lr_scale : float):
         '''
@@ -339,6 +343,23 @@ class SwinGaussianModel:
         for i in range(self._rotation.shape[1]):
             l.append('rot_{}'.format(i))
         return l
+
+    def dump_para_as_rgb(self, para, path):
+        mkdir_p(os.path.dirname(path))
+
+        xyz = para['xyz'].detach().cpu().numpy()
+        normals = np.zeros_like(xyz)
+        features = para['v'].detach().cpu().numpy()
+        features_normalized = (features - features.min(axis=0)) / (features.max(axis=0) - features.min(axis=0))
+        features_normalized = (features_normalized * 255).astype(np.uint8)
+        list_of_attributes = ['x', 'y', 'z', 'nx', 'ny', 'nz', 'red', 'green', 'blue']
+        dtype_full = [(attribute, 'f4') for attribute in list_of_attributes]
+
+        elements = np.empty(xyz.shape[0], dtype=dtype_full)
+        attributes = np.concatenate((xyz, normals, features_normalized), axis=1)
+        elements[:] = list(map(tuple, attributes))
+        el = PlyElement.describe(elements, 'vertex')
+        PlyData([el]).write(path)
 
     def save_ply(self, path):
         '''
@@ -450,8 +471,6 @@ class SwinGaussianModel:
             "rigid_rotcen": self._matured_rigid_rotcen,
         }
 
-    def _increasingly_dump(self, paras, path):
-        pass
     def _mature(self, mature_idx):
         '''
         move gaussians from immatured to matured
@@ -479,28 +498,30 @@ class SwinGaussianModel:
         for pname, para in self.matured_paras.items():
             assert self.buffer_size >= num_of_maturing, f"The buffer size ({self.buffer_size}) should be larger than the number of maturing gaussians ({num_of_maturing})"
             para = para[-self.buffer_size:]
-            # TODO: do we need to clone before dump to disk?
             dump_para[pname] = para[-num_of_maturing:]
-        self._increasingly_dump(dump_para, "streamable.ply")
+        # TODO
+        stream_dump(dump_para, self.dump_path)
 
         self.matured_ctr += num_of_maturing
         print("Matured {} gaussians, total {} now".format(num_of_maturing, self.matured_ctr))
 
     def _rollover(self, mature_idx, new_gs_lifespan):
 
-        # we need a dynamic model to update the motion related paras
-        life_span = self._frame_end[mature_idx] - self._frame_start[mature_idx] + 1
-        self._xyz[mature_idx], self._rotation[mature_idx] = rigid_deform(
-            self._xyz[mature_idx],
-            self._rotation[mature_idx],
-            self._rigid_v[mature_idx],
-            self._rigid_rotvec[mature_idx],
-            self._rigid_rotcen[mature_idx],
-            life_span,
-            skip=self.disable_deform)
-        
-        # need to rebind the optimizer with para
-        self.replace_tensors_to_optimizer(mature_idx)
+        if self.deform:
+            # -------------------------- if deformable gaussian -------------------------- #
+            life_span = self._frame_end[mature_idx] - self._frame_start[mature_idx] + 1
+            self._xyz[mature_idx], self._rotation[mature_idx] = rigid_deform(
+                self._xyz[mature_idx],
+                self._rotation[mature_idx],
+                self._rigid_v[mature_idx],
+                self._rigid_rotvec[mature_idx],
+                self._rigid_rotcen[mature_idx],
+                life_span,
+                skip=not self.deform)
+            # ------------------------------------- - ------------------------------------ #
+            
+            # need to rebind the optimizer with para
+            self.replace_tensors_to_optimizer(mature_idx)
 
         self._frame_birth[mature_idx] = self._frame_end[mature_idx]
         self._frame_start[mature_idx] = self._frame_birth[mature_idx]
@@ -534,7 +555,8 @@ class SwinGaussianModel:
         self._mature(indices_of(self._frame_start >= 0))
 
     def get_immature_para(self, para=["xyz", "feature", "opacity", "scaling", "rotation",
-                                      "start_frame", "end_frame", "birth_frame"]):
+                                      "start_frame", "end_frame", "birth_frame",
+                                      "v", "rotvec", "rotcen"]):
         '''
         return a dict of gs paras for all immuture gaussians
         this function returns all immature para, so no timporal deformation is needed
@@ -557,6 +579,12 @@ class SwinGaussianModel:
                 ret[p] = self._frame_end
             elif p == "birth_frame":
                 ret[p] = self._frame_birth
+            elif p == "v":
+                ret[p] = self._rigid_v
+            elif p == "rotvec":
+                ret[p] = self._rigid_rotvec
+            elif p == "rotcen":
+                ret[p] = self._rigid_rotcen
             else:
                 assert False, "Unknown parameter {}".format(p)
         return ret
@@ -582,22 +610,25 @@ class SwinGaussianModel:
                 rot = torch.cat((self._rotation[immature_frame_idx],
                                  self._matured_rotation[matured_frame_idx]), dim=0)
                 pos = torch.cat((self._xyz[immature_frame_idx], self._matured_xyz[matured_frame_idx]), dim=0)
+                
+                # -------------------------- if deformable gaussian -------------------------- #
                 rigid_v = torch.cat((self._rigid_v[immature_frame_idx],
-                                     self._matured_rigid_v[matured_frame_idx]), dim=0)
+                                    self._matured_rigid_v[matured_frame_idx]), dim=0)
                 rigid_rotvec = torch.cat((self._rigid_rotvec[immature_frame_idx],
-                                          self._matured_rigid_rotvec[matured_frame_idx]), dim=0)
+                                        self._matured_rigid_rotvec[matured_frame_idx]), dim=0)
                 rigid_rotcen = torch.cat((self._rigid_rotcen[immature_frame_idx],
-                                          self._matured_rigid_rotcen[matured_frame_idx]), dim=0)
+                                        self._matured_rigid_rotcen[matured_frame_idx]), dim=0)
                 # age based deformation
                 pos, rot = rigid_deform(pos, rot,
                                         rigid_v,
                                         rigid_rotvec,
                                         rigid_rotcen,
                                         age,
-                                        skip=self.disable_deform)
+                                        skip=not self.deform)
+                # ------------------------------------- - ------------------------------------ #
+                    
                 ret["rotation"] = self.rotation_activation(rot)
                 ret["xyz"] = pos
-                
             elif p == "feature":
                 im_feature = torch.cat((self._features_dc[immature_frame_idx],
                                        self._features_rest[immature_frame_idx]), dim=1)
@@ -610,6 +641,9 @@ class SwinGaussianModel:
             elif p == "scaling":
                 ret[p] = self.scaling_activation(torch.cat((self._scaling[immature_frame_idx],
                                                             self._matured_scaling[matured_frame_idx]), dim=0))
+            elif p == "v":
+                ret[p] = torch.cat((self._rigid_v[immature_frame_idx],
+                                   self._matured_rigid_v[matured_frame_idx]), dim=0)
             else:
                 assert False, "Unknown parameter {}".format(p)
         return ret

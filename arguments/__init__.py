@@ -55,6 +55,7 @@ class ModelParams(ParamGroup):
         self.data_device = "cuda"
         self.eval = True
         self.cap_max = 100000
+        self.max_frame = 100
         self.init_type = "random"
         super().__init__(parser, "Loading Parameters", sentinel)
 
@@ -73,7 +74,7 @@ class PipelineParams(ParamGroup):
 class OptimizationParams(ParamGroup):
     def __init__(self, parser):
         self.iterations = 30_010
-        # self.genesis_iterations = 30_010
+        self.genesis_iterations = -1
         self.position_lr_init = 0.00016
         self.position_lr_final = 0.0000016
         self.position_lr_delay_mult = 0.01
@@ -84,9 +85,12 @@ class OptimizationParams(ParamGroup):
         self.rotation_lr = 0.001
 
         # TODO: hyperpara tuning
-        self.rigid_v_lr = 0.000001
-        self.rigid_rotvec_lr = 0.000001
-        self.rigid_rotcen_lr = 0.000001
+        # self.rigid_v_lr = 5e-9
+        # self.rigid_rotvec_lr = 1e-7
+        # self.rigid_rotcen_lr = 5e-4
+        self.rigid_v_lr = 1e-4
+        self.rigid_rotvec_lr = 1e-4
+        self.rigid_rotcen_lr = 1e-4
 
         self.percent_dense = 0.01
         self.lambda_dssim = 0.2

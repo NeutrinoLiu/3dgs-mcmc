@@ -12,7 +12,7 @@ from argparse import ArgumentParser, Namespace
 from utils.tempo_utils import SliWinManager
 from arguments import ModelParams, PipelineParams, OptimizationParams
 from utils.general_utils import safe_state
-from utils.loss_utils import l1_loss, ssim, build_neighbor
+from utils.loss_utils import l1_loss, ssim, build_neighbor, arap_loss
 from utils.image_utils import psnr
 
 
@@ -30,6 +30,8 @@ except ImportError:
     TENSORBOARD_FOUND = False
 
 # CONSTS
+
+ENABLE_ARAP_LOSS = False
 
 def prepare_output_and_logger(args):    
     if not args.model_path:
@@ -103,8 +105,12 @@ def training_report(tb_writer, iteration, Ll1, loss, l1_loss, elapsed, testing_i
                     tb_writer.add_scalar(config['name'] + '/loss_viewpoint - psnr', psnr_test, iteration)
 
         if tb_writer:
-            pc = scene.gaussians.get_immature_para(['xyz', 'opacity'])
+            pc = scene.gaussians.get_immature_para(['xyz', 'opacity' ,'v', 'rotvec', 'rotcen'])
             tb_writer.add_histogram("scene/opacity_histogram", pc['opacity'], iteration)
+            tb_writer.add_histogram("scene/xyz_histogram", torch.norm(pc['xyz'], dim=-1), iteration)
+            tb_writer.add_histogram("scene/rigid_v_histogram", torch.norm(pc['v'], dim=-1), iteration)
+            tb_writer.add_histogram("scene/rigid_rotvec_histogram", torch.norm(pc['rotvec'], dim=-1), iteration)
+            tb_writer.add_histogram("scene/rigid_rotcen_histogram", torch.norm(pc['rotcen'], dim=-1), iteration)
             tb_writer.add_scalar('total_points', pc['xyz'].shape[0], iteration)
         
         torch.cuda.empty_cache()
@@ -130,12 +136,14 @@ def train_slide_window(dataset_args, train_args, pipe_args, args,
     
     ema_loss_for_log = 0.0
     total_iterations = train_args.iterations
+    if args.genesis_iterations > 0 and genesis:
+        total_iterations = args.genesis_iterations
     progress_bar = tqdm(range(first_iter, total_iterations), desc="Training progress")
     first_iter += 1
 
     gaussians.training_setup(train_args)
 
-    neighbor = None
+    immature_neighbor = None
 
     for iter in range(first_iter, total_iterations):
         iter_start.record()
@@ -168,14 +176,31 @@ def train_slide_window(dataset_args, train_args, pipe_args, args,
         # mcmc regularization
         loss += args.opacity_reg * torch.abs(active_pc['opacity']).mean()
         loss += args.scale_reg * torch.abs(active_pc['scaling']).mean()
+
+        immature_motion = gaussians.get_immature_para(['xyz', 'v', 'rotvec', 'rotcen'])
+        immature_active_idx, _ = gaussians.derive_idx_of_active(viewpoint_cam.frame)
         # arap regularization
-        
+        if ENABLE_ARAP_LOSS and immature_neighbor is not None:
+            # nonsens to optimze asap for those matured gaussians
+            # arap loss is only for immature gaussians 
+            arap_penalties = arap_loss(
+                immature_motion['xyz'].detach(), # use xyz for weight
+                [immature_motion['v'], 
+                 immature_motion['rotvec'],
+                 immature_motion['rotcen']],
+                immature_neighbor['indices'],
+            )
+            assert arap_penalties.shape == (3,), f"arap_penalties should have 3 elements, got {len(arap_penalties)}"
+            penalty_weights = torch.tensor([.1, .1, .1], device='cuda')
+            loss += torch.sum(arap_penalties * penalty_weights)
+            arap_penalties_detach = arap_penalties.detach()
+            if tb_writer:
+                tb_writer.add_scalar('train_loss_patches/arap_loss_v', arap_penalties_detach[0].item(), iter)
+                tb_writer.add_scalar('train_loss_patches/arap_loss_rot', arap_penalties_detach[1].item(), iter)
+                tb_writer.add_scalar('train_loss_patches/arap_loss_cen', arap_penalties_detach[2].item(), iter)
+
 
         loss.backward()
-
-        # if iter > 606 and iter < 10000:
-        #     print(f"iter: {iter}, image shape: {image.shape}, gt shape: {gt_image.shape}")
-        #     breakpoint()
 
         iter_end.record()
 
@@ -198,17 +223,18 @@ def train_slide_window(dataset_args, train_args, pipe_args, args,
                 print("\n[ITER {}] Saving Gaussians".format(iter))
                 scene.save(iter)
 
-            # ------------------------------- densification ------------------------------ #
             # TODO, try to change different location for densification
-            if iter == train_args.densify_from_iter:
-                neighbor = build_neighbor(gaussians.get_immature_para(['xyz'])['xyz'])
+            # ------------------------------- densification ------------------------------ #
             if iter < train_args.densify_until_iter and iter > train_args.densify_from_iter and iter % train_args.densification_interval == 0:
-                gaussians.relocate_gs_immuture(swin_mgr, iter % (train_args.densification_interval * 10)== 0)
-                neighbor = build_neighbor(gaussians.get_immature_para(['xyz'])['xyz'])
+                gaussians.relocate_gs_immuture(swin_mgr, iter % (train_args.densification_interval * 50)== 0)
 
                 if genesis: # only increasing gaussian number for genesis
                     gaussians.add_new_gs(cap_max=args.cap_max)
-            
+
+            if ENABLE_ARAP_LOSS and \
+               (iter >= train_args.densify_from_iter and iter % train_args.densification_interval == 0):
+                immature_neighbor = build_neighbor(gaussians.get_immature_para(['xyz'])['xyz'])
+
             if iter < total_iterations:
                 gaussians.optimizer.step()
                 gaussians.optimizer.zero_grad(set_to_none=True)
@@ -219,7 +245,6 @@ def train_slide_window(dataset_args, train_args, pipe_args, args,
                 # we only perturb the active set of immature gaussians, not all of them 
                 # get immature_mask from render_ret
                 immature_pc = gaussians.get_immature_para()
-                immature_active_idx = gaussians.derive_idx_of_active(viewpoint_cam.frame)[0]
 
                 L = build_scaling_rotation(immature_pc['scaling'][immature_active_idx], immature_pc['rotation'][immature_active_idx])
                 noise_spread = L @ L.transpose(1, 2)
@@ -232,6 +257,12 @@ def train_slide_window(dataset_args, train_args, pipe_args, args,
 
                 #  _xyz it the para that we want to directly perturb
                 gaussians._xyz[immature_active_idx].add_(noise_intensity)
+
+            # --------------------------------- dump ply --------------------------------- #
+            # if iter % 1000 == 0:
+            #     for f in swin_mgr.all_frames():
+            #         para = gaussians.get_basic_para_at(f, ['xyz','v'])
+            #         gaussians.dump_para_as_rgb(para, os.path.join(scene.model_path, f"frame_{f}_{iter}.ply"))
 
             # -------------------------------- check point ------------------------------- #
             # training status save
@@ -246,10 +277,13 @@ def train(dataset_args, train_args, pipe_args, args):
     tb_writer = prepare_output_and_logger(dataset_args)
 
     # ----------------------------------- init ----------------------------------- #
+    dump_path = os.path.join(dataset_args.model_path, "streamable.dat")
+    print(f"Streamable dump path: {dump_path}")
     gaussians = SwinGaussianModel(dataset_args.sh_degree,
                                   max_lifespan=args.swin_size,
                                   matured_buffer_size=args.cap_max,
-                                  disable_deform=args.no_deform)
+                                  deform=args.deform,
+                                  dump_path=dump_path)
     scene = DynamicScene(dataset_args, gaussians)
     swin_mgr = SliWinManager(args.swin_size,
                              scene.max_frame,
@@ -266,11 +300,13 @@ def train(dataset_args, train_args, pipe_args, args):
     
     # finish init window first
     genesis = swin_mgr.frame_start == 0
+    print(genesis)
     train_slide_window(dataset_args, train_args, pipe_args, args,
                     gaussians, scene, swin_mgr, tb_writer, 
                     genesis=genesis,
                     first_iter=first_iter)
     if args.first_frame_only:
+        gaussians.mature_rest()
         return
     if genesis:
         gaussians.decay_genesis()
@@ -306,15 +342,15 @@ def parse():
     parser.add_argument('--port', type=int, default=6009)
     parser.add_argument('--debug_from', type=int, default=-1)
     parser.add_argument('--detect_anomaly', action='store_true', default=False)
-    parser.add_argument("--test_iterations", nargs="+", type=int, default=list(range(1_000, 30_000, 1_000)))
+    parser.add_argument("--test_iterations", nargs="+", type=int, default=[1000, 20000, 30000])
     parser.add_argument("--save_iterations", nargs="+", type=int, default=[])
     parser.add_argument("--quiet", action="store_true")
-    parser.add_argument("--checkpoint_iterations", nargs="+", type=int, default=[29_000, 30_000])
+    parser.add_argument("--checkpoint_iterations", nargs="+", type=int, default=[20000])
     parser.add_argument("--start_checkpoint", type=str, default = None)
 
     parser.add_argument("--swin_size", type=int, default=5)
     parser.add_argument("--first_frame_only", action="store_true", default=False)
-    parser.add_argument("--no_deform", action='store_true', default=False)
+    parser.add_argument("--deform", action='store_true', default=False)
 
     args = parser.parse_args(sys.argv[1:])
     args.save_iterations.append(args.iterations)
