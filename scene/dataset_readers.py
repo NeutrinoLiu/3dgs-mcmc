@@ -446,7 +446,7 @@ def readDynamicSceneInfo(path, images, eval, llffhold=8, init_type="random", num
     train_cam_info_at = []
     test_cam_info_at = []
 
-    def update_img_path(c, t, load=True):
+    def update_img_path(c, t, load=False):
         # enable load to preopen the image for non-lazy camera loader
         uid = f"{t}.{c.uid}"
         image_name = os.path.join(str(t), c.image_name)
