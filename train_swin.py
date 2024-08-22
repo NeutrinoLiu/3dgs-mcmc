@@ -279,6 +279,7 @@ def train(dataset_args, train_args, pipe_args, args):
     # ----------------------------------- init ----------------------------------- #
     dump_path = os.path.join(dataset_args.model_path, "streamable.dat")
     print(f"Streamable dump path: {dump_path}")
+    print(f"SH degree: {dataset_args.sh_degree}")
     gaussians = SwinGaussianModel(dataset_args.sh_degree,
                                   max_lifespan=args.swin_size,
                                   matured_buffer_size=args.cap_max,
@@ -342,13 +343,14 @@ def parse():
     parser.add_argument('--port', type=int, default=6009)
     parser.add_argument('--debug_from', type=int, default=-1)
     parser.add_argument('--detect_anomaly', action='store_true', default=False)
-    parser.add_argument("--test_iterations", nargs="+", type=int, default=[1000, 20000, 30000])
+    # parser.add_argument("--test_iterations", nargs="+", type=int, default=[1000, 20000, 30000])
+    parser.add_argument("--test_iterations", nargs="+", type=int, default=list(range(1000, 31000, 5000)))
     parser.add_argument("--save_iterations", nargs="+", type=int, default=[])
     parser.add_argument("--quiet", action="store_true")
     parser.add_argument("--checkpoint_iterations", nargs="+", type=int, default=[20000])
     parser.add_argument("--start_checkpoint", type=str, default = None)
 
-    parser.add_argument("--swin_size", type=int, default=5)
+    parser.add_argument("--swin_size", type=int, default=10)
     parser.add_argument("--first_frame_only", action="store_true", default=False)
     parser.add_argument("--deform", action='store_true', default=False)
 

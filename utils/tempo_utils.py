@@ -118,6 +118,12 @@ class SliWinManager:
                 print(f"Warning: too many frames in window, resample {self.max_sample} from {self}")
                 print(f"Sampled frames: {self._sampled_frames}")
         return self._sampled_frames
+    def sampled_frames_biased(self):
+        all = self.all_frames()
+        pool = [all[0]]
+        for i in range(1, len(all)):
+            pool = pool * 2 + [all[i]]
+        return sorted(random.sample(pool, self.max_sample))
     def all_frames(self):
         return range(self.frame_start, min(self.frame_end, self.max_frame))
 
