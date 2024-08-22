@@ -676,6 +676,13 @@ class SwinGaussianModel:
                 optimizable_tensors[group["name"]] = group["params"][0]
 
         return optimizable_tensors
+    def frame_postfix(self, new_frame_start, new_frame_end, new_frame_birth):
+        '''
+        update the reference in guassianModel object as well
+        '''
+        self._frame_start = torch.cat((self._frame_start, new_frame_start), dim=0)
+        self._frame_end = torch.cat((self._frame_end, new_frame_end), dim=0)
+        self._frame_birth = torch.cat((self._frame_birth, new_frame_birth), dim=0)
 
     def densification_postfix(self, new_xyz, new_features_dc, new_features_rest, new_opacities, new_scaling, new_rotation,
                               new_rigid_v, new_rigid_rotvec, new_rigid_rotcen,
@@ -757,7 +764,7 @@ class SwinGaussianModel:
 
         return optimizable_tensors
 
-    def _update_params(self, idxs, ratio):
+    def _update_params(self, idxs, ratio, with_frame=False):
         '''
         break those chosen gaussians into multiple weaker gaussians
         return a list of REFERENCEs to new values of new gaussians
@@ -772,7 +779,21 @@ class SwinGaussianModel:
         new_opacity = self.inverse_opacity_activation(new_opacity)
         new_scaling = self.scaling_inverse_activation(new_scaling.reshape(-1, 3))
 
-        return (self._xyz[idxs],
+        if with_frame:
+            return (self._xyz[idxs],
+                self._features_dc[idxs],
+                self._features_rest[idxs],
+                new_opacity,
+                new_scaling,
+                self._rotation[idxs],
+                self._rigid_v[idxs],
+                self._rigid_rotvec[idxs],
+                self._rigid_rotcen[idxs],
+                self._frame_start[idxs],
+                self._frame_end[idxs],
+                self._frame_birth[idxs])
+        else:
+            return (self._xyz[idxs],
                 self._features_dc[idxs],
                 self._features_rest[idxs],
                 new_opacity,
@@ -841,7 +862,10 @@ class SwinGaussianModel:
         if num_gs <= 0:
             return 0
 
-        probs = self.get_opacity.squeeze(-1) 
+        immature_pc = self.get_immature_para(para=["opacity"])
+        alive_mask = (immature_pc['opacity'] > 0.005).squeeze(-1)
+        alive_indices = alive_mask.nonzero(as_tuple=True)[0]
+        probs = immature_pc['opacity'][alive_indices, 0]
 
         # idx (index of templates): a list indicates index of those to be copied, 
         # ratio (ctr of templates's showup): a counter indicates the number of copy for those who is at the same index
@@ -856,8 +880,11 @@ class SwinGaussianModel:
             new_rotation,
             new_rigid_v,
             new_rigid_rotvec,
-            new_rigid_rotcen
-        ) = self._update_params(add_idx, ratio=ratio)
+            new_rigid_rotcen,
+            new_frame_start,
+            new_frame_end,
+            new_frame_birth
+        ) = self._update_params(add_idx, ratio=ratio, with_frame=True)
 
         # original high opacity gaussian get weakened first
         self._opacity[add_idx] = new_opacity
@@ -875,6 +902,8 @@ class SwinGaussianModel:
                                    new_rigid_rotcen,
                                    reset_params=False)
         self.replace_tensors_to_optimizer(inds=add_idx)
+        # dont have to replace frame paras in tensor, they are not optimizable
+        self.frame_postfix(new_frame_start, new_frame_end, new_frame_birth)
 
         return num_gs
 

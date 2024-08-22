@@ -383,8 +383,13 @@ def readFixedCams(cams: dict):
         height = intr['height']
         width = intr['width']
 
-        uid = int(cam_name.split('_')[-1].split('Cam')[-1].split('.')[0])
-
+        if "cam" in cam_name:
+            uid = int(cam_name.split('_')[-1].split('cam')[-1].split('.')[0])
+        elif "Cam" in cam_name:
+            uid = int(cam_name.split('_')[-1].split('Cam')[-1].split('.')[0])
+        else:
+            assert False, "fail to parse cam name"
+            
         R = np.array(extr['SO3']).T
         T = np.array(extr['T'])
 
@@ -430,8 +435,8 @@ def readDynamicSceneInfo(path, images, eval, llffhold=8, init_type="random", num
 
     reading_dir = "images_per_frame"
     for t in range(max_frame):
-        max_frame_dir = os.path.join(path, reading_dir, str(t))
-        assert os.path.exists(max_frame_dir), f"missing frame dir: {max_frame_dir}"
+        each_frame_dir = os.path.join(path, reading_dir, str(t))
+        assert os.path.exists(each_frame_dir), f"missing frame dir: {each_frame_dir}"
 
     fixed_cam_infos_unsorted = readFixedCams(cams=cams_para)
     # print([c.image_name for c in fixed_cam_infos_unsorted])

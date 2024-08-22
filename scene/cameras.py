@@ -16,6 +16,7 @@ from torch import nn
 import os
 import numpy as np
 from utils.graphics_utils import getWorld2View2, getProjectionMatrix, getProjectionMatrixShift
+WARNED = False
 
 class Camera(nn.Module):
     def load(self):
