@@ -9,6 +9,8 @@ screenshots
 0_log_*
 test_*
 *.log
-a06*
+a0*
 result.txt
 useful_ckpts
+0_scripts/
+hyperTuning/

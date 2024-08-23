@@ -87,7 +87,7 @@ class MiniCam:
 class LazyCamera(nn.Module):
     def __init__(self, colmap_id, R, T, FoVx, FoVy, image, gt_alpha_mask,
                  image_name, uid,
-                 trans=np.array([0.0, 0.0, 0.0]), scale=1.0, data_device = "cuda",
+                 data_device = "cuda",
                   # new member fields
                  frame=0,
                  extra_para=None,
@@ -107,9 +107,6 @@ class LazyCamera(nn.Module):
 
         self.zfar = 100.0
         self.znear = 0.01
-
-        self.trans = trans
-        self.scale = scale
 
         assert os.path.exists(image_path), f"missing image {image_path}"
         self.extra_para = extra_para
@@ -147,6 +144,7 @@ class LazyCamera(nn.Module):
         image = Image.open(self.image_path)
         resolution_scale = self.resolution_scale
         args_resolution = self.args_resolution # args.resolution
+        # scale down from paras either in dataset, or in args
 
         orig_w, orig_h = image.size
 
@@ -187,7 +185,7 @@ class LazyCamera(nn.Module):
         else:
             self.original_image *= torch.ones((1, self.image_height, self.image_width), device=self.data_device)
 
-        self.world_view_transform = torch.tensor(getWorld2View2(self.R, self.T, self.trans, scale)).transpose(0, 1).cuda()
+        self.world_view_transform = torch.tensor(getWorld2View2(self.R, self.T)).transpose(0, 1).cuda()
         if self.extra_para is not None:
             self.projection_matrix = getProjectionMatrixShift(znear=self.znear, zfar=self.zfar, focal_x=self.extra_para["focal_x"], focal_y=self.extra_para["focal_y"], 
                                                           cx=self.extra_para["cx"], cy=self.extra_para["cy"], width=self.image_width, height=self.image_height,

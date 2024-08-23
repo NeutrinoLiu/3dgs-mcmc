@@ -861,7 +861,8 @@ class SwinGaussianModel:
 
         if num_gs <= 0:
             return 0
-
+        print(f"Adding {num_gs} new gaussians, total {target_num} now")
+        
         immature_pc = self.get_immature_para(para=["opacity"])
         alive_mask = (immature_pc['opacity'] > 0.005).squeeze(-1)
         alive_indices = alive_mask.nonzero(as_tuple=True)[0]
