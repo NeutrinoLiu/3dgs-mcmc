@@ -56,6 +56,7 @@ class ModelParams(ParamGroup):
         self.eval = True
         self.cap_max = 100000
         self.max_frame = 100
+        self.init_pts = 100000
         self.init_type = "random"
         super().__init__(parser, "Loading Parameters", sentinel)
 

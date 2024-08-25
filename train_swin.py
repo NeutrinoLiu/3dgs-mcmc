@@ -225,7 +225,9 @@ def train_slide_window(dataset_args, train_args, pipe_args, args,
 
             # TODO, try to change different location for densification
             # ------------------------------- densification ------------------------------ #
-            if iter < train_args.densify_until_iter and iter > train_args.densify_from_iter and iter % train_args.densification_interval == 0:
+            if (iter < train_args.densify_until_iter and iter > train_args.densify_from_iter and iter % train_args.densification_interval == 0) or \
+                (not genesis and iter < train_args.densify_until_iter and iter > 0 and iter % train_args.densification_interval == 0):
+                
                 gaussians.relocate_gs_immuture(swin_mgr, iter % (train_args.densification_interval * 50)== 0)
 
                 if genesis: # only increasing gaussian number for genesis
