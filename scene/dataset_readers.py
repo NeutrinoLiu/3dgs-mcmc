@@ -383,10 +383,14 @@ def readFixedCams(cams: dict):
         height = intr['height']
         width = intr['width']
 
+        if "camera" in cam_name:
+            uid = int(cam_name.split('_')[-1].split('camera')[-1].split('.')[0])
         if "cam" in cam_name:
             uid = int(cam_name.split('_')[-1].split('cam')[-1].split('.')[0])
         elif "Cam" in cam_name:
             uid = int(cam_name.split('_')[-1].split('Cam')[-1].split('.')[0])
+        elif cam_name.split('.')[0].isdigit():
+            uid = int(cam_name.split('.')[0])
         else:
             assert False, "fail to parse cam name"
             

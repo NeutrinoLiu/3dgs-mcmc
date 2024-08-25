@@ -111,7 +111,7 @@ class LazyCamera(nn.Module):
         assert os.path.exists(image_path), f"missing image {image_path}"
         self.extra_para = extra_para
         self.image_path = image_path
-        self.resolution_scale = resolution_scale
+        self.dataset_scale = resolution_scale # scales for dataset
         self.args_resolution = args_resolution
 
         try:
@@ -142,14 +142,15 @@ class LazyCamera(nn.Module):
             print(f"duplicate loading cam {self.image_name}")
             return 
         image = Image.open(self.image_path)
-        resolution_scale = self.resolution_scale
+        dataset_scale = self.dataset_scale
         args_resolution = self.args_resolution # args.resolution
         # scale down from paras either in dataset, or in args
 
         orig_w, orig_h = image.size
 
         if args_resolution in [1, 2, 4, 8]:
-            resolution = round(orig_w/(resolution_scale * args_resolution)), round(orig_h/(resolution_scale * args_resolution))
+            downscale = dataset_scale * args_resolution
+            resolution = int(orig_w / downscale), int(orig_h / downscale)
         else:  # should be a type that converts to float
             if args_resolution == -1:
                 if orig_w > 1600:
@@ -158,14 +159,14 @@ class LazyCamera(nn.Module):
                         print("[ INFO ] Encountered quite large input images (>1.6K pixels width), rescaling to 1.6K.\n "
                             "If this is not desired, please explicitly specify '--resolution/-r' as 1")
                         WARNED = True
-                    global_down = orig_w / 1600
+                    width_scale = orig_w / 1600
                 else:
-                    global_down = 1
+                    width_scale = 1
             else:
-                global_down = orig_w / args_resolution
+                width_scale = orig_w / args_resolution
 
-            scale = float(global_down) * float(resolution_scale)
-            resolution = (int(orig_w / scale), int(orig_h / scale))
+            downscale = float(width_scale) * float(dataset_scale)
+            resolution = (int(orig_w / downscale), int(orig_h / downscale))
 
         resized_image_rgb = PILtoTorch(image, resolution)
 
@@ -187,9 +188,14 @@ class LazyCamera(nn.Module):
 
         self.world_view_transform = torch.tensor(getWorld2View2(self.R, self.T)).transpose(0, 1).cuda()
         if self.extra_para is not None:
-            self.projection_matrix = getProjectionMatrixShift(znear=self.znear, zfar=self.zfar, focal_x=self.extra_para["focal_x"], focal_y=self.extra_para["focal_y"], 
-                                                          cx=self.extra_para["cx"], cy=self.extra_para["cy"], width=self.image_width, height=self.image_height,
-                                                          fovX=self.FoVx, fovY=self.FoVy).transpose(0,1).cuda()
+            self.projection_matrix = getProjectionMatrixShift(znear=self.znear, zfar=self.zfar, fovX=self.FoVx, fovY=self.FoVy,
+                                                            focal_x=self.extra_para["focal_x"] / downscale,
+                                                            focal_y=self.extra_para["focal_y"] / downscale, 
+                                                            cx=self.extra_para["cx"] / downscale,
+                                                            cy=self.extra_para["cy"] / downscale,
+                                                            width=self.image_width,
+                                                            height=self.image_height,
+                                                          ).transpose(0,1).cuda()
         else:
             self.projection_matrix = getProjectionMatrix(znear=self.znear, zfar=self.zfar, fovX=self.FoVx, fovY=self.FoVy).transpose(0,1).cuda()
         self.full_proj_transform = (self.world_view_transform.unsqueeze(0).bmm(self.projection_matrix.unsqueeze(0))).squeeze(0)

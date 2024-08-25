@@ -278,6 +278,9 @@ def train(dataset_args, train_args, pipe_args, args):
 
     # ----------------------------------- init ----------------------------------- #
     dump_path = os.path.join(dataset_args.model_path, "streamable.dat")
+    if os.path.exists(dump_path):
+        input(f"Streamable dump path exists ({dump_path}), overwrite it?")
+        os.remove(dump_path)
     print(f"Streamable dump path: {dump_path}")
     print(f"SH degree: {dataset_args.sh_degree}")
     gaussians = SwinGaussianModel(dataset_args.sh_degree,
@@ -343,8 +346,8 @@ def parse():
     parser.add_argument('--port', type=int, default=6009)
     parser.add_argument('--debug_from', type=int, default=-1)
     parser.add_argument('--detect_anomaly', action='store_true', default=False)
-    parser.add_argument("--test_iterations", nargs="+", type=int, default=[1000, 5000, 10000, 15000, 20000, 25000, 30000])
-    # parser.add_argument("--test_iterations", nargs="+", type=int, default=list(range(1000, 31000, 1000)))
+    # parser.add_argument("--test_iterations", nargs="+", type=int, default=[1000, 5000, 10000, 15000, 20000, 25000, 30000])
+    parser.add_argument("--test_iterations", nargs="+", type=int, default=list(range(1000, 31000, 1000)))
     parser.add_argument("--save_iterations", nargs="+", type=int, default=[])
     parser.add_argument("--quiet", action="store_true")
     parser.add_argument("--checkpoint_iterations", nargs="+", type=int, default=[])

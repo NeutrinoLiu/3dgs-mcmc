@@ -7,26 +7,16 @@ run_train() {
     local c=$3
     echo "Running with parameters: a=${a}, b=${b}, c=${c}"
     python train_swin.py --source_path data/DyNeRF/cook_spinach --cap_max ${a} --scale_reg ${b} --opacity_reg ${b} --noise_lr ${c} \
-    --sh_degree 1 --swin_size 1 --eval -m test_dynerf_${a}_${b}_${c}  --first_frame_only > hyperTuning/${a}_${b}_${c}.log 2>&1
-    move result.txt hyperTuning/${a}_${b}_${c}_result.txt
+    --sh_degree 1 --swin_size 1 --eval -m test_dynerf_${a}_${b}_${c} --iterations 8010 --first_frame_only > hyperTuning/${a}_${b}_${c}.log 2>&1
+    mv result.txt hyperTuning/${a}_${b}_${c}_result.txt
 }
 
 # Run the function with different sets of parameters
 
-run_train 200000 1e-2 5e3
-run_train 200000 1e-3 5e3
-run_train 200000 1e-4 5e3
-run_train 200000 1e-5 5e3
-run_train 200000 1e-6 5e3
-
-run_train 200000 1e-2 5e4
-run_train 200000 1e-3 5e4
-run_train 200000 1e-4 5e4
-run_train 200000 1e-5 5e4
-run_train 200000 1e-6 5e4
-
+run_train 100000 1e-2 5e5
+run_train 150000 1e-2 5e5
 run_train 200000 1e-2 5e5
-run_train 200000 1e-3 5e5
-run_train 200000 1e-4 5e5
-run_train 200000 1e-5 5e5
-run_train 200000 1e-6 5e5
+run_train 250000 1e-2 5e5
+run_train 300000 1e-2 5e5
+run_train 350000 1e-2 5e5
+run_train 400000 1e-2 5e5

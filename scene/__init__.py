@@ -161,7 +161,7 @@ class DynamicScene:
         self.cameras_extent = scene_info.nerf_normalization["radius"]
 
         # --------------- load cams in scene_info to actual cam objects -------------- #
-        print(f"PRE-loading Cameras for {self.max_frame} frames ...")
+        print(f"PRE-loading Cameras for {self.max_frame} frames, with dataset scales {resolution_scales}...")
         for t in range(self.max_frame):
             for resolution_scale in resolution_scales:
                 train_cams = {}
