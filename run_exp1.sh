@@ -16,29 +16,29 @@ mkdir exp1
 
 
 run_train 40000 4
-run_train 80000 4
-run_train 120000 4
-run_train 40000 8
-run_train 80000 8
-run_train 120000 8
-run_train 40000 12
-run_train 80000 12
-run_train 120000 12
+# run_train 80000 4
+# run_train 120000 4
+# run_train 40000 8
+# run_train 80000 8
+# run_train 120000 8
+# run_train 40000 12
+# run_train 80000 12
+# run_train 120000 12
 
-run_train 160000 4
-run_train 160000 8
-run_train 160000 12
-run_train 40000 16
-run_train 80000 16
-run_train 120000 16
-run_train 160000 16
+# run_train 160000 4
+# run_train 160000 8
+# run_train 160000 12
+# run_train 40000 16
+# run_train 80000 16
+# run_train 120000 16
+# run_train 160000 16
 
-run_train 200000 4
-run_train 200000 8
-run_train 200000 12
-run_train 200000 16
-run_train 40000 20
-run_train 80000 20
-run_train 120000 20
-run_train 160000 20
-run_train 200000 20
+# run_train 200000 4
+# run_train 200000 8
+# run_train 200000 12
+# run_train 200000 16
+# run_train 40000 20
+# run_train 80000 20
+# run_train 120000 20
+# run_train 160000 20
+# run_train 200000 20

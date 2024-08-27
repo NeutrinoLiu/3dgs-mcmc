@@ -172,7 +172,7 @@ class DynamicScene:
                 # print(f"PRE-loading Test Cameras  @ frame {t}")
                 test_cams[resolution_scale] = cameraList_from_camInfos_lazy(scene_info.test_cam_at[t], resolution_scale, args)
             self.train_cam_at.append(train_cams)
-            self.test_cam_at.append
+            self.test_cam_at.append(test_cams)
         if self.loaded_iter:
             self.gaussians.load_ply(os.path.join(self.model_path,
                                                            "point_cloud",
@@ -237,7 +237,7 @@ class DynamicScene:
             cam_register = self.activated_train_frame_scale
             cam_list = self.train_cam_at
             tag = "Train"
-        assert t >=0 and t < len(cam_list), f"invalid time frame {t}"
+        assert t >=0 and t < len(cam_list), f"invalid time frame {t}, total {'test' if test else 'train'} frames {len(cam_list)}"
 
         hash = (t, scale)
         if hash in cam_register:
