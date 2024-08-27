@@ -8,18 +8,17 @@ import time
 import json
 import os
 
-def stream_dump(params_dict, filename):
+def stream_dump(params_dict, filename, shs_degree=1):
     '''
     name: fromF, toF, xyz, feature, s,   r,    o
     data: I    , I,   fff, fffx4,   fff, ffff, f
     '''
-    SHS_DEGREE = 1
     FORMAT = {
         'start_frame': 'I',
         'end_frame': 'I',
         'xyz': 'fff',
         'f_dc': 'fff',
-        'f_rest': 'fff' * ((SHS_DEGREE + 1) ** 2 -1),
+        'f_rest': 'fff' * ((shs_degree + 1) ** 2 -1),
         'scaling': 'fff',
         'rotation': 'ffff',
         'opacity': 'f'

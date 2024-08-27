@@ -500,7 +500,7 @@ class SwinGaussianModel:
             para = para[-self.buffer_size:]
             dump_para[pname] = para[-num_of_maturing:]
         # TODO
-        stream_dump(dump_para, self.dump_path)
+        stream_dump(dump_para, self.dump_path, self.max_sh_degree)
 
         self.matured_ctr += num_of_maturing
         print("Matured {} gaussians, total {} now".format(num_of_maturing, self.matured_ctr))

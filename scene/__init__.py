@@ -163,18 +163,16 @@ class DynamicScene:
         self.cameras_extent = scene_info.nerf_normalization["radius"]
 
         # --------------- load cams in scene_info to actual cam objects -------------- #
-        print(f"PRE-loading Cameras for {self.max_frame} frames, with dataset scales {resolution_scales}...")
-        for t in range(self.max_frame):
+        print(f"PRE-loading Cameras for from frame #{args.min_frame} to frame #{args.max_frame}, with dataset scales {resolution_scales}...")
+        for t in range(args.min_frame, self.max_frame):
             for resolution_scale in resolution_scales:
                 train_cams = {}
-                # print(f"PRE-loading Train Cameras @ frame {t}")
                 train_cams[resolution_scale] = cameraList_from_camInfos_lazy(scene_info.train_cam_at[t], resolution_scale, args)
                 test_cams = {}
                 # print(f"PRE-loading Test Cameras  @ frame {t}")
                 test_cams[resolution_scale] = cameraList_from_camInfos_lazy(scene_info.test_cam_at[t], resolution_scale, args)
             self.train_cam_at.append(train_cams)
-            self.test_cam_at.append(test_cams)
-
+            self.test_cam_at.append
         if self.loaded_iter:
             self.gaussians.load_ply(os.path.join(self.model_path,
                                                            "point_cloud",
