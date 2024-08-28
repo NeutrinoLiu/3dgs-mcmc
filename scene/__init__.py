@@ -131,7 +131,7 @@ class DynamicScene:
             print("Found cam.json file, assuming SwinGS data set!")
             scene_info = sceneLoadTypeCallbacks["SwinGS"](args.source_path, args.images, args.eval, 
                                                             max_frame=args.max_frame,
-                                                            num_pts=args.init_pts,)
+                                                            num_pts=min(args.init_pts, args.cap_max),)
         else:
             assert False, "Could not recognize scene type!"
 
