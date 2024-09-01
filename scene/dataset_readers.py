@@ -342,17 +342,23 @@ def readGoogleImmersiveInfo(path, images, eval, llffhold=8, init_type="random", 
 
     nerf_normalization = getNerfppNorm(train_cam_infos)
 
-    # --------------------------- random only ply init --------------------------- #
-    ply_path = os.path.join(path, "random.ply")
-    print(f"Generating random point cloud ({num_pts})...")
-    
-    xyz = np.random.random((num_pts, 3)) * nerf_normalization["radius"]* 3*2 -(nerf_normalization["radius"]*3)
-    
-    num_pts = xyz.shape[0]
-    shs = np.random.random((num_pts, 3)) / 255.0
-    pcd = BasicPointCloud(points=xyz, colors=SH2RGB(shs), normals=np.zeros((num_pts, 3)))
+    if init_type == "sfm":
+        ply_path = os.path.join(path, "sfm.ply")
+        bin_path = os.path.join(path, "sfm.bin")
+        xyz, rgb, _ = read_points3D_binary(bin_path)
+        storePly(ply_path, xyz, rgb)
+        
+    elif init_type == "random":
+        ply_path = os.path.join(path, "random.ply")
+        print(f"Generating random point cloud ({num_pts})...")
+        
+        xyz = np.random.random((num_pts, 3)) * nerf_normalization["radius"]* 3*2 -(nerf_normalization["radius"]*3)
+        
+        num_pts = xyz.shape[0]
+        shs = np.random.random((num_pts, 3)) / 255.0
+        pcd = BasicPointCloud(points=xyz, colors=SH2RGB(shs), normals=np.zeros((num_pts, 3)))
 
-    storePly(ply_path, xyz, SH2RGB(shs) * 255)
+        storePly(ply_path, xyz, SH2RGB(shs) * 255)
 
     try:
         pcd = fetchPly(ply_path)
@@ -485,17 +491,26 @@ def readDynamicSceneInfo(path, images, eval, llffhold=8, init_type="random", num
     # use the first frame camera to init random points
     nerf_normalization = getNerfppNorm(train_cam_info_at[0]) 
 
-    # --------------------------- random only ply init --------------------------- #
-    ply_path = os.path.join(path, "random.ply")
-    print(f"Generating random point cloud ({num_pts})...")
-    
-    xyz = np.random.random((num_pts, 3)) * nerf_normalization["radius"]* 3*2 -(nerf_normalization["radius"]*3)
-    
-    num_pts = xyz.shape[0]
-    shs = np.random.random((num_pts, 3)) / 255.0
-    pcd = BasicPointCloud(points=xyz, colors=SH2RGB(shs), normals=np.zeros((num_pts, 3)))
+    if init_type == "sfm":
+        ply_path = os.path.join(path, "sfm.ply")
+        bin_path = os.path.join(path, "sfm.bin")
+        xyz, rgb, _ = read_points3D_binary(bin_path)
+        storePly(ply_path, xyz, rgb)
 
-    storePly(ply_path, xyz, SH2RGB(shs) * 255)
+    elif init_type == "random":
+        ply_path = os.path.join(path, "random.ply")
+        print(f"Generating random point cloud ({num_pts})...")
+        
+        xyz = np.random.random((num_pts, 3)) * nerf_normalization["radius"]* 3*2 -(nerf_normalization["radius"]*3)
+        
+        num_pts = xyz.shape[0]
+        shs = np.random.random((num_pts, 3)) / 255.0
+        pcd = BasicPointCloud(points=xyz, colors=SH2RGB(shs), normals=np.zeros((num_pts, 3)))
+
+        storePly(ply_path, xyz, SH2RGB(shs) * 255)
+    else:
+        print("Please specify a correct init_type: random or sfm")
+        exit(0)
 
     try:
         pcd = fetchPly(ply_path)

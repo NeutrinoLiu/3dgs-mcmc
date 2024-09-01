@@ -130,6 +130,7 @@ class DynamicScene:
             os.path.exists(os.path.join(args.source_path, "images_per_frame")):
             print("Found cam.json file, assuming SwinGS data set!")
             scene_info = sceneLoadTypeCallbacks["SwinGS"](args.source_path, args.images, args.eval, 
+                                                            init_type=args.init_type,
                                                             max_frame=args.max_frame,
                                                             num_pts=min(args.init_pts, args.cap_max),)
         else:
