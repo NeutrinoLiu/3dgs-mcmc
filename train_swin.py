@@ -55,7 +55,7 @@ def prepare_output_and_logger(args):
         print("Tensorboard not available: not logging progress")
     return tb_writer
 
-def training_report(tb_writer, iteration, Ll1, loss, l1_loss, elapsed, testing_iterations, scene: DynamicScene, renderFunc, renderArgs, args,
+def training_report(tb_writer, iteration, Ll1, loss, l1_loss, elapsed, testing_iterations, scene: DynamicScene, renderFunc, renderArgs, dataset_args,
                     swin_mgr: SliWinManager):
     if tb_writer:
         tb_writer.add_scalar('train_loss_patches/l1_loss', Ll1.item(), iteration)
@@ -96,7 +96,7 @@ def training_report(tb_writer, iteration, Ll1, loss, l1_loss, elapsed, testing_i
                 print("\n[ITER {}] Evaluating {}: L1 {} PSNR {}".format(iteration, config['name'], l1_test, psnr_test))
                 
                 # ---------------------------- manual dump result ---------------------------- #
-                with open("result.txt", "a") as f:
+                with open(os.path.join(dataset_args.model_path, "psnr.txt"), 'a') as f:
                     for idx, psnr_list in psnr_test_per_frame.items():
                         f.write("\n[ITER {} FRAME {}] eval {} PSNR {}".format(iteration, idx, config['name'], sum(psnr_list)/len(psnr_list)))
                 
@@ -216,8 +216,8 @@ def train_slide_window(dataset_args, train_args, pipe_args, args,
             # Log and save
             training_report(tb_writer, iter, Ll1, loss, l1_loss, iter_start.elapsed_time(iter_end), 
                             args.test_iterations, 
-                            scene, render, (pipe_args, background), args,
-                            swin_mgr)
+                            scene, render, (pipe_args, background), dataset_args=dataset_args,
+                            swin_mgr=swin_mgr)
             # guassian point cloud save 
             if (iter in args.save_iterations):
                 print("\n[ITER {}] Saving Gaussians".format(iter))
