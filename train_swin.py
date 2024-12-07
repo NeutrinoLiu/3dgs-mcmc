@@ -12,7 +12,7 @@ from argparse import ArgumentParser, Namespace
 from utils.tempo_utils import SliWinManager
 from arguments import ModelParams, PipelineParams, OptimizationParams
 from utils.general_utils import safe_state
-from utils.loss_utils import l1_loss, ssim, build_neighbor, arap_loss
+from utils.loss_utils import l1_loss, ssim, build_neighbor, arap_loss, msssim
 from utils.image_utils import psnr
 
 
@@ -57,6 +57,7 @@ def prepare_output_and_logger(args):
 
 def training_report(tb_writer, iteration, Ll1, loss, l1_loss, elapsed, testing_iterations, scene: DynamicScene, renderFunc, renderArgs, dataset_args,
                     swin_mgr: SliWinManager):
+    global global_scale
     if tb_writer:
         tb_writer.add_scalar('train_loss_patches/l1_loss', Ll1.item(), iteration)
         tb_writer.add_scalar('train_loss_patches/total_loss', loss.item(), iteration)
@@ -65,7 +66,7 @@ def training_report(tb_writer, iteration, Ll1, loss, l1_loss, elapsed, testing_i
     # Report test and samples of training set
     if iteration in testing_iterations:
         torch.cuda.empty_cache()
-        test_cams = sorted(scene.batchGetTestCam(swin_mgr.all_frames()),
+        test_cams = sorted(scene.batchGetTestCam(swin_mgr.all_frames(), global_scale),
                            key=lambda x: x.frame)
         # train_cams = scene.batchGetTrainCamAt(swin_mgr.sampled_frames())
         validation_configs = ({'name': 'test', 'cameras' : test_cams}, 
@@ -75,9 +76,15 @@ def training_report(tb_writer, iteration, Ll1, loss, l1_loss, elapsed, testing_i
         grouping = lambda x: x.split('/')[0]
         for config in validation_configs:
             if config['cameras'] and len(config['cameras']) > 0:
-                l1_test = 0.0
-                psnr_test = 0.0
+                l1_all_avg = 0.0
+                psnr_all_avg = 0.0
+                ssim_all_avg = 0.0
+                msssim_all_avg = 0.0
+
                 psnr_test_per_frame = {}
+                ssim_test_per_frame = {}
+                msssim_test_per_frame = {}
+
                 for idx, viewpoint in enumerate(config['cameras']):
                     # no need to append swin_mgr to render when test time, it can just render by current frame info
                     image = torch.clamp(
@@ -88,21 +95,40 @@ def training_report(tb_writer, iteration, Ll1, loss, l1_loss, elapsed, testing_i
                         tb_writer.add_images(config['name'] + "_view_{}/render".format(viewpoint.image_name), image[None], global_step=iteration)
                         if iteration == testing_iterations[0]:
                             tb_writer.add_images(config['name'] + "_view_{}/ground_truth".format(viewpoint.image_name), gt_image[None], global_step=iteration)
-                    l1_test += l1_loss(image, gt_image).mean().double()
-                    psnr_test += psnr(image, gt_image).mean().double()
-                    psnr_test_per_frame.setdefault(grouping(viewpoint.image_name), []).append(psnr(image, gt_image).mean().double())
-                psnr_test /= len(config['cameras'])
-                l1_test /= len(config['cameras'])          
-                print("\n[ITER {}] Evaluating {}: L1 {} PSNR {}".format(iteration, config['name'], l1_test, psnr_test))
+                    psnr_batch = psnr(image, gt_image).mean().double()
+                    ssim_batch = ssim(image, gt_image).mean().double()
+                    msssim_batch = msssim(image[None].cpu(), gt_image[None].cpu())
+
+                    psnr_test_per_frame.setdefault(grouping(viewpoint.image_name), []).append(psnr_batch)
+                    ssim_test_per_frame.setdefault(grouping(viewpoint.image_name), []).append(ssim_batch)
+                    msssim_test_per_frame.setdefault(grouping(viewpoint.image_name), []).append(msssim_batch)
+
+                    l1_all_avg += l1_loss(image, gt_image).mean().double()
+                    psnr_all_avg += psnr_batch
+                    ssim_all_avg += ssim_batch
+                    msssim_all_avg += msssim_batch
+
+                l1_all_avg /= len(config['cameras'])
+                psnr_all_avg /= len(config['cameras'])
+                ssim_all_avg /= len(config['cameras'])
+                msssim_all_avg /= len(config['cameras'])
+
+                print("\n[ITER {}] Evaluating {}: L1 {} PSNR {} SSIM {} MSSSIM {}".format(iteration, config['name'], l1_all_avg, psnr_all_avg, ssim_all_avg, msssim_all_avg))
                 
                 # ---------------------------- manual dump result ---------------------------- #
                 with open(os.path.join(dataset_args.model_path, "psnr.txt"), 'a') as f:
                     for idx, psnr_list in psnr_test_per_frame.items():
                         f.write("\n[ITER {} FRAME {}] eval {} PSNR {}".format(iteration, idx, config['name'], sum(psnr_list)/len(psnr_list)))
+                with open(os.path.join(dataset_args.model_path, "ssim.txt"), 'a') as f:
+                    for idx, ssim_list in ssim_test_per_frame.items():
+                        f.write("\n[ITER {} FRAME {}] eval {} SSIM {}".format(iteration, idx, config['name'], sum(ssim_list)/len(ssim_list)))
+                with open(os.path.join(dataset_args.model_path, "msssim.txt"), 'a') as f:
+                    for idx, msssim_list in msssim_test_per_frame.items():
+                        f.write("\n[ITER {} FRAME {}] eval {} MSSSIM {}".format(iteration, idx, config['name'], sum(msssim_list)/len(msssim_list)))
                 
                 if tb_writer:
-                    tb_writer.add_scalar(config['name'] + '/loss_viewpoint - l1_loss', l1_test, iteration)
-                    tb_writer.add_scalar(config['name'] + '/loss_viewpoint - psnr', psnr_test, iteration)
+                    tb_writer.add_scalar(config['name'] + '/loss_viewpoint - l1_loss', l1_all_avg, iteration)
+                    tb_writer.add_scalar(config['name'] + '/loss_viewpoint - psnr', psnr_all_avg, iteration)
 
         if tb_writer:
             pc = scene.gaussians.get_immature_para(['xyz', 'opacity' ,'v', 'rotvec', 'rotcen'])
@@ -121,6 +147,7 @@ def train_slide_window(dataset_args, train_args, pipe_args, args,
                        tb_writer,
                        genesis: bool = False,
                        first_iter: int = 0):
+    global global_scale
 
     bg_color = [1, 1, 1] if dataset_args.white_background else [0, 0, 0]
     background = torch.tensor(bg_color, dtype=torch.float32, device="cuda")
@@ -147,7 +174,8 @@ def train_slide_window(dataset_args, train_args, pipe_args, args,
 
     for iter in range(first_iter, total_iterations):
         iter_start.record()
-        xyz_lr = gaussians.update_learning_rate(iter)
+        bias = 0 if genesis else 10_000
+        xyz_lr = gaussians.update_learning_rate(iter, bias=bias)
         if genesis and iter % 1000 == 0:
             gaussians.oneupSHdegree()
         if (iter - 1) == args.debug_from:
@@ -157,7 +185,7 @@ def train_slide_window(dataset_args, train_args, pipe_args, args,
         # ------------------------------ normal training ----------------------------- #
         if not viewpoint_stack:
             viewpoint_stack = scene.batchGetTrainCam(
-                swin_mgr.sampled_frames()).copy()
+                swin_mgr.sampled_frames(), global_scale).copy()
             random.shuffle(viewpoint_stack)
             viewpoint_cam = viewpoint_stack.pop(randint(0, len(viewpoint_stack)-1))
         else:
@@ -270,9 +298,12 @@ def train_slide_window(dataset_args, train_args, pipe_args, args,
             # training status save
             if (iter in args.checkpoint_iterations):
                 print("\n[ITER {}] Saving Checkpoint".format(iter))
-                torch.save((gaussians.capture(), swin_mgr.state_dump(), iter), f"{scene.model_path}/chkpnt_{swin_mgr.frame_start}_{iter}.pth")
+                # save_target = f"{scene.model_path}/chkpnt_{swin_mgr.frame_start}_{iter}.pth"
+                save_target = f"{scene.model_path}/chkpnt_{iter}.pth"
+                torch.save((gaussians.capture(), swin_mgr.state_dump(), iter), save_target)
 
 def train(dataset_args, train_args, pipe_args, args):
+    global global_scale
     safe_state(args.quiet)
     print(f"Dectect anomaly: {args.detect_anomaly}")
     torch.autograd.set_detect_anomaly(args.detect_anomaly)
@@ -280,17 +311,25 @@ def train(dataset_args, train_args, pipe_args, args):
 
     # ----------------------------------- init ----------------------------------- #
     dump_path = os.path.join(dataset_args.model_path, "streamable.dat")
+    skip_dump = False
     if os.path.exists(dump_path):
-        input(f"Streamable dump path exists ({dump_path}), overwrite it?")
-        os.remove(dump_path)
+        a = input(f"Streamable dump path exists ({dump_path}), overwrite it?")
+        if a.strip().lower() == 'y':
+            print("removing old dump")
+            os.remove(dump_path)
+        else:
+            print("incremental dump, will skip next dump.")
+            skip_dump = True
     print(f"Streamable dump path: {dump_path}")
     print(f"SH degree: {dataset_args.sh_degree}")
     gaussians = SwinGaussianModel(dataset_args.sh_degree,
                                   max_lifespan=args.swin_size,
                                   matured_buffer_size=args.cap_max,
                                   deform=args.deform,
-                                  dump_path=dump_path)
-    scene = DynamicScene(dataset_args, gaussians)
+                                  dump_path=dump_path,
+                                  skip_first=skip_dump)
+    global_scale = dataset_args.resolution if dataset_args.resolution > 0 else 1
+    scene = DynamicScene(dataset_args, gaussians, resolution_scales=[global_scale])
     swin_mgr = SliWinManager(args.swin_size,
                              scene.max_frame,
                              DynamicScene.MAX_FRAME_IN_MEMORY)
@@ -352,7 +391,7 @@ def parse():
     # parser.add_argument("--test_iterations", nargs="+", type=int, default=list(range(1000, 31000, 1000)))
     parser.add_argument("--save_iterations", nargs="+", type=int, default=[])
     parser.add_argument("--quiet", action="store_true")
-    parser.add_argument("--checkpoint_iterations", nargs="+", type=int, default=[])
+    parser.add_argument("--checkpoint_iterations", nargs="+", type=int, default=[5000])
     parser.add_argument("--start_checkpoint", type=str, default = None)
 
     parser.add_argument("--swin_size", type=int, default=10)
@@ -361,6 +400,7 @@ def parse():
 
     args = parser.parse_args(sys.argv[1:])
     args.save_iterations.append(args.iterations)
+    args.checkpoint_iterations.append(args.iterations-1)
     print("Optimizing " + args.model_path)
 
     dataset_args = lp.extract(args)
@@ -369,6 +409,7 @@ def parse():
 
     return dataset_args, train_args, pipe_args, args
 
+global_scale = 1.0
 if __name__ == "__main__":
     # breakpoint()
     # current version

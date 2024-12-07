@@ -26,7 +26,7 @@ from utils.graphics_utils import BasicPointCloud
 from utils.general_utils import strip_symmetric, build_scaling_rotation
 from utils.reloc_utils import compute_relocation_cuda
 from utils.tempo_utils import rigid_deform
-from utils.stream_utils import stream_dump
+from utils.stream_utils import stream_dump, stream_dump_compact
 
 def indices_of(tensor):
     '''
@@ -60,7 +60,8 @@ class SwinGaussianModel:
                  max_lifespan : int,
                  matured_buffer_size : int,
                  deform : bool,
-                 dump_path : str):
+                 dump_path : str,
+                 skip_first=False):
         '''
         attributes
         '''
@@ -92,6 +93,7 @@ class SwinGaussianModel:
         self.matured_ctr = 0
         self.deform = deform
         self.dump_path = dump_path
+        self.dump_skip = skip_first
 
         '''
         spatial model
@@ -319,11 +321,11 @@ class SwinGaussianModel:
                                                     lr_delay_mult=training_args.position_lr_delay_mult,
                                                     max_steps=training_args.position_lr_max_steps)
 
-    def update_learning_rate(self, iteration):
+    def update_learning_rate(self, iteration, bias=0):
         ''' Learning rate scheduling per step '''
         for param_group in self.optimizer.param_groups:
             if param_group["name"] == "xyz":
-                lr = self.xyz_scheduler_args(iteration)
+                lr = self.xyz_scheduler_args(iteration + bias)
                 param_group['lr'] = lr
                 return lr
 
@@ -500,7 +502,11 @@ class SwinGaussianModel:
             para = para[-self.buffer_size:]
             dump_para[pname] = para[-num_of_maturing:]
         # TODO
-        stream_dump(dump_para, self.dump_path, self.max_sh_degree)
+        if self.dump_skip:
+            print("Skip the first frame dump avoiding checkpoint redundancy")
+            self.dump_skip = False
+        else:
+            stream_dump_compact(dump_para, self.dump_path, self.max_sh_degree)
 
         self.matured_ctr += num_of_maturing
         print("Matured {} gaussians, total {} now".format(num_of_maturing, self.matured_ctr))
@@ -923,7 +929,7 @@ class SwinGaussianModel:
                 print(f"[frame {f}] start relocate gaussians: {dead_mask.sum()} dead, {alive_mask.sum()} alive")
 
                 # manually log the relocation process
-                with open("result.txt", "a") as file:
+                with open("relocate_report.txt", "a") as file:
                     file.write(f"\n[frame {f}] start relocate gaussians: {dead_mask.sum()} dead, {alive_mask.sum()} alive")
 
             if dead_mask.sum() == 0 or alive_mask.sum() == 0:

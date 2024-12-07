@@ -66,6 +66,14 @@ def _ssim(img1, img2, window, window_size, channel, size_average=True):
     else:
         return ssim_map.mean(1).mean(1).mean(1)
 
+from torchmetrics.image import MultiScaleStructuralSimilarityIndexMeasure
+
+def msssim(rgb, gts):
+    # assert (rgb.max() <= 1.05 and rgb.min() >= -0.05)
+    # assert (gts.max() <= 1.05 and gts.min() >= -0.05)
+    ms_ssim = MultiScaleStructuralSimilarityIndexMeasure(data_range=1.0)
+    return ms_ssim(rgb, gts).item()
+
 # --------------------------------- ARAP loss -------------------------------- #
 
 def o3d_knn(pts, num_knn):

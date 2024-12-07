@@ -14,3 +14,6 @@ result.txt
 useful_ckpts
 0_scripts/
 hyperTuning/
+exp*
+run_exp*
+*.zip
