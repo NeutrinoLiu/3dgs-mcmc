@@ -391,7 +391,7 @@ def parse():
     # parser.add_argument("--test_iterations", nargs="+", type=int, default=list(range(1000, 31000, 1000)))
     parser.add_argument("--save_iterations", nargs="+", type=int, default=[])
     parser.add_argument("--quiet", action="store_true")
-    parser.add_argument("--checkpoint_iterations", nargs="+", type=int, default=[5000])
+    parser.add_argument("--checkpoint_iterations", nargs="+", type=int, default=[])
     parser.add_argument("--start_checkpoint", type=str, default = None)
 
     parser.add_argument("--swin_size", type=int, default=10)
@@ -400,7 +400,7 @@ def parse():
 
     args = parser.parse_args(sys.argv[1:])
     args.save_iterations.append(args.iterations)
-    args.checkpoint_iterations.append(args.iterations-1)
+    # args.checkpoint_iterations.append(args.iterations-1)
     print("Optimizing " + args.model_path)
 
     dataset_args = lp.extract(args)
